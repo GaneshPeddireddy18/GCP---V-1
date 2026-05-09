@@ -148,13 +148,16 @@ Upload a service account JSON and fetch your live GCP inventory.
     
     st.divider()
     
-    st.subheader("Navigation")
+    st.markdown("### 🚀 Navigation")
     page_selected = st.radio(
         "Select Page",
-        ["Overview", "Cost Analytics", "Live Resources", "Monitoring", "AI Assistant"],
+        ["📊 Overview", "💰 Cost Analytics", "🖥️ Live Resources", "📈 Monitoring", "🤖 AI Assistant"],
         index=0,
         label_visibility="collapsed"
     )
+    
+    # Clean up selection
+    page_selected = page_selected.split(" ", 1)[-1] if " " in page_selected else page_selected
 
 if "resources" not in st.session_state:
     st.session_state.resources = []
@@ -231,75 +234,149 @@ else:
     st.markdown(
         """
         <style>
+        * {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', sans-serif;
+        }
         .stApp {
-            background: radial-gradient(circle at top, rgba(59, 130, 246, 0.12), transparent 26%), linear-gradient(180deg, #0b1020 0%, #111827 60%, #0f172a 100%);
+            background: linear-gradient(135deg, #030712 0%, #0f172a 50%, #1a1f3a 100%);
             color: #e5e7eb;
+            letter-spacing: 0.3px;
         }
         [data-testid="stSidebar"] {
-            background: linear-gradient(180deg, #111827 0%, #0f172a 100%);
+            background: linear-gradient(180deg, #0f172a 0%, #0a1428 100%);
             border-right: 1px solid rgba(255, 255, 255, 0.08);
         }
         .block-container {
-            padding-top: 1.2rem;
-            padding-bottom: 2rem;
+            padding-top: 1.5rem;
+            padding-bottom: 3rem;
+            padding-left: 2rem;
+            padding-right: 2rem;
         }
-        .hero-card, .feature-card, .section-card {
-            background: rgba(15, 23, 42, 0.72);
-            border: 1px solid rgba(148, 163, 184, 0.18);
-            border-radius: 18px;
-            padding: 18px 20px;
-            box-shadow: 0 18px 36px rgba(0, 0, 0, 0.22);
-            backdrop-filter: blur(14px);
+        .hero-card {
+            background: linear-gradient(135deg, rgba(15, 23, 42, 0.85) 0%, rgba(31, 41, 55, 0.72) 100%);
+            border: 1px solid rgba(59, 130, 246, 0.25);
+            border-radius: 24px;
+            padding: 32px 28px;
+            box-shadow: 0 24px 48px rgba(0, 0, 0, 0.35), inset 0 1px 1px rgba(255, 255, 255, 0.08);
+            backdrop-filter: blur(20px);
+            margin-bottom: 24px;
         }
-        .hero-card h2, .section-card h3 {
-            margin: 0 0 8px 0;
+        .feature-card {
+            background: linear-gradient(135deg, rgba(15, 23, 42, 0.78) 0%, rgba(25, 35, 55, 0.65) 100%);
+            border: 1px solid rgba(96, 165, 250, 0.18);
+            border-radius: 16px;
+            padding: 20px 24px;
+            box-shadow: 0 12px 32px rgba(0, 0, 0, 0.25), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+            backdrop-filter: blur(16px);
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        .feature-card:hover {
+            background: linear-gradient(135deg, rgba(15, 23, 42, 0.95) 0%, rgba(25, 35, 55, 0.88) 100%);
+            border-color: rgba(96, 165, 250, 0.35);
+            box-shadow: 0 20px 48px rgba(59, 130, 246, 0.15), inset 0 1px 0 rgba(255, 255, 255, 0.1);
+            transform: translateY(-2px);
+        }
+        .section-card {
+            background: linear-gradient(135deg, rgba(15, 23, 42, 0.75) 0%, rgba(25, 35, 55, 0.62) 100%);
+            border: 1px solid rgba(148, 163, 184, 0.15);
+            border-radius: 20px;
+            padding: 24px 28px;
+            box-shadow: 0 16px 40px rgba(0, 0, 0, 0.28);
+            backdrop-filter: blur(18px);
+            margin-top: 20px;
+            margin-bottom: 20px;
+        }
+        .hero-card h2 {
+            margin: 0 0 12px 0;
+            font-size: 2.2rem;
+            font-weight: 700;
+            background: linear-gradient(135deg, #ffffff 0%, #cbd5e1 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            letter-spacing: -0.5px;
+        }
+        .section-card h3 {
+            margin: 0 0 12px 0;
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: #f1f5f9;
+            letter-spacing: -0.3px;
         }
         .hero-badge {
             display: inline-block;
-            padding: 6px 10px;
+            padding: 8px 14px;
             border-radius: 999px;
-            background: rgba(96, 165, 250, 0.16);
+            background: linear-gradient(135deg, rgba(96, 165, 250, 0.2) 0%, rgba(139, 92, 246, 0.15) 100%);
+            border: 1px solid rgba(96, 165, 250, 0.25);
             color: #bfdbfe;
-            font-size: 0.78rem;
-            margin-bottom: 10px;
+            font-size: 0.8rem;
+            font-weight: 600;
+            margin-bottom: 16px;
+            letter-spacing: 0.5px;
+            text-transform: uppercase;
         }
         .feature-grid {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-            gap: 12px;
+            gap: 16px;
             margin-top: 12px;
         }
         .feature-card strong {
             display: block;
-            font-size: 1.02rem;
-            margin-bottom: 6px;
-            color: #f8fafc;
+            font-size: 1rem;
+            margin-bottom: 8px;
+            color: #f1f5f9;
+            font-weight: 700;
+            letter-spacing: -0.2px;
         }
         .feature-card span {
             color: #cbd5e1;
-            font-size: 0.92rem;
+            font-size: 0.9rem;
+            font-weight: 500;
             line-height: 1.45;
         }
         div[data-testid="stMetric"] {
-            background: rgba(15, 23, 42, 0.68);
-            border: 1px solid rgba(148, 163, 184, 0.16);
-            border-radius: 16px;
-            padding: 14px 16px;
-            box-shadow: 0 14px 28px rgba(0, 0, 0, 0.16);
+            background: linear-gradient(135deg, rgba(15, 23, 42, 0.8) 0%, rgba(25, 35, 55, 0.65) 100%);
+            border: 1px solid rgba(96, 165, 250, 0.12);
+            border-radius: 14px;
+            padding: 18px 20px;
+            box-shadow: 0 16px 32px rgba(0, 0, 0, 0.2);
+            backdrop-filter: blur(12px);
+            transition: all 0.3s ease;
+        }
+        div[data-testid="stMetric"]:hover {
+            border-color: rgba(96, 165, 250, 0.25);
+            background: linear-gradient(135deg, rgba(15, 23, 42, 0.95) 0%, rgba(25, 35, 55, 0.8) 100%);
         }
         div[data-testid="stMetric"] label {
             color: #cbd5e1 !important;
+            font-size: 0.85rem !important;
+            font-weight: 600 !important;
+            letter-spacing: 0.5px !important;
+            text-transform: uppercase !important;
+        }
+        div[data-testid="stMetric"] > div:last-child {
+            font-size: 2rem !important;
+            font-weight: 700 !important;
+            color: #ffffff !important;
         }
         .stButton > button {
-            border-radius: 14px;
-            border: 1px solid rgba(96, 165, 250, 0.22);
-            background: linear-gradient(135deg, #3b82f6 0%, #0ea5e9 100%);
+            border-radius: 12px;
+            border: 1px solid rgba(96, 165, 250, 0.25);
+            background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
             color: white;
-            font-weight: 600;
+            font-weight: 700;
+            font-size: 0.95rem;
+            letter-spacing: 0.5px;
+            padding: 10px 20px !important;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
         }
         .stButton > button:hover {
-            filter: brightness(1.08);
-            border-color: rgba(96, 165, 250, 0.42);
+            background: linear-gradient(135deg, #0ea5e9 0%, #06b6d4 100%);
+            border-color: rgba(96, 165, 250, 0.5);
+            box-shadow: 0 12px 24px rgba(59, 130, 246, 0.3);
+            transform: translateY(-1px);
         }
         </style>
         """,
@@ -358,8 +435,32 @@ else:
     metrics_col4.metric("Estimated Daily Spend", f"${cost_summary['daily_spending']:.2f}")
 
     st.caption("Live data refreshes on demand and powers the summary views below.")
+    
+    sec_col1, sec_col2 = st.columns([2, 1])
+    with sec_col1:
+        st.markdown('<div class="section-card"><h3>📊 Infrastructure Overview</h3><p style="margin:0;color:#cbd5e1;font-size:0.95rem;">Real-time snapshot of your core GCP services.</p></div>', unsafe_allow_html=True)
+    with sec_col2:
+        st.markdown(f'<div class="feature-card"><strong>🔐 Security Score</strong><span>{health_score}/100 • {"Excellent" if health_score >= 80 else "Good" if health_score >= 60 else "Fair"}</span></div>', unsafe_allow_html=True)
 
-    selected_type = page_selected
+    selected_type = page_selected.split(" ", 1)[-1] if " " in page_selected else page_selected
+    
+    # Add activity feed as a collapsible section
+    with st.expander("📋 Recent Activity & Events", expanded=False):
+        activity_items = [
+            ("🟢 Data Refresh", f"Latest resources synced {format_elapsed_time(st.session_state.last_refresh_at)}", "Connected"),
+            (f"📊 Overview Loaded", f"{len(df_filtered)} resources tracked across 8 categories", "Active"),
+            (f"💰 Cost Analysis", f"${cost_summary['estimated_monthly_cost']:.2f}/month estimated spend", "Analyzed"),
+        ]
+        if not df_filtered.empty:
+            top_cost = df_filtered.nlargest(1, "estimated_monthly_cost").iloc[0]
+            activity_items.append((
+                f"⚠️ High Cost Item",
+                f"{top_cost.get('display_name', 'Resource')} at ${top_cost.get('estimated_monthly_cost', 0):.2f}/mo",
+                "Alert"
+            ))
+        
+        for icon_event, description, status in activity_items[:5]:
+            st.markdown(f'<div style="padding:12px;border-left:2px solid rgba(96,165,250,0.3);margin-bottom:8px;"><div style="font-weight:600;color:#f1f5f9;">{icon_event}</div><div style="font-size:0.85rem;color:#cbd5e1;">{description}</div></div>', unsafe_allow_html=True)
 
     # OVERVIEW PAGE
     if selected_type == "Overview":
