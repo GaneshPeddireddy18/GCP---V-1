@@ -191,7 +191,7 @@ def build_security_recommendations(df: pd.DataFrame) -> list[tuple[str, str]]:
     if df["asset_type"].isin(["iam.googleapis.com/ServiceAccountKey", "iam.googleapis.com/Role"]).any():
         recommendations.append(("Medium", "Check service account keys and IAM roles for broad permissions."))
 
-    idle_count = int((~df["state"].isin(["ACTIVE", "RUNNING", "READY", "UP"])).sum()) if "state" in df else 0
+    idle_count = int((~df["state"].isin(["ACTIVE", "RUNNING", "UP"])).sum()) if "state" in df else 0
     if idle_count:
         recommendations.append(("Low", f"{idle_count} resources appear idle or stopped and should be reviewed."))
 
@@ -935,7 +935,7 @@ else:
             recommendations = []
             if not df[df["owner_hint"].eq("Unknown")].empty:
                 recommendations.append("Add owner labels/tags to reduce blind spots.")
-            if not df[df["state"].isin(["ACTIVE", "RUNNING", "READY", "UP"])].empty:
+            if not df[df["state"].isin(["ACTIVE", "RUNNING", "UP"])].empty:
                 recommendations.append("Review stopped or idle resources and delete what is no longer needed.")
             if any("europe" in str(row.location).lower() or "asia" in str(row.location).lower() for row in df.itertuples()):
                 recommendations.append("Consider moving always-on workloads to a cheaper region if latency permits.")
@@ -948,7 +948,7 @@ else:
             if any(term in prompt_lower for term in ["expensive", "cost", "money"]):
                 answer = f"Top expensive resources right now: {expensive_text}. Estimated monthly cost is ${cost_summary['estimated_monthly_cost']:.2f}."
             elif any(term in prompt_lower for term in ["unused", "idle", "delete"]):
-                idle_count = len(df[~df["state"].isin(["ACTIVE", "RUNNING", "READY", "UP"])])
+                idle_count = len(df[~df["state"].isin(["ACTIVE", "RUNNING", "UP"])])
                 answer = f"I found {idle_count} non-active resources. Start by reviewing them for deletion or shutdown."
             elif any(term in prompt_lower for term in ["reduce cost", "optimize", "save money"]):
                 answer = "Cost optimization ideas: " + " ".join(recommendations[:4])

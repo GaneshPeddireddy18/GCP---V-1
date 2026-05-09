@@ -245,8 +245,8 @@ def fetch_live_resources(
 
 
 def filter_likely_running(resources: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Return resources that are commonly considered active/running."""
-    active_states = {"ACTIVE", "RUNNING", "READY", "UP"}
+    """Return resources that are actively running (excludes READY state)."""
+    active_states = {"ACTIVE", "RUNNING", "UP"}
     running_hints = (
         "compute.googleapis.com/Instance",
         "container.googleapis.com/Cluster",
