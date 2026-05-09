@@ -155,10 +155,53 @@ df = pd.DataFrame(resources) if resources else pd.DataFrame()
 if not resources:
     st.info("Upload a service account JSON and click 'Fetch Live Resources' in the sidebar to begin.")
 else:
+    # Category -> asset types mapping. Overview and Live Resources will only consider these.
+    CATEGORY_MAP = {
+        "Compute": [
+            "compute.googleapis.com/Instance",
+            "compute.googleapis.com/Disk",
+            "compute.googleapis.com/ForwardingRule",
+        ],
+        "Databases": [
+            "sqladmin.googleapis.com/Instance",
+            "spanner.googleapis.com/Instance",
+        ],
+        "Networking": [
+            "compute.googleapis.com/Network",
+            "compute.googleapis.com/Firewall",
+            "compute.googleapis.com/ForwardingRule",
+        ],
+        "Storage": [
+            "storage.googleapis.com/Bucket",
+        ],
+        "Kubernetes": [
+            "container.googleapis.com/Cluster",
+        ],
+        "Security": [
+            "cloudkms.googleapis.com/KeyRing",
+            "cloudkms.googleapis.com/CryptoKey",
+        ],
+        "Billing": [
+            "billingbudgets.googleapis.com/Budget",
+        ],
+        "IAM": [
+            "iam.googleapis.com/ServiceAccount",
+            "iam.googleapis.com/ServiceAccountKey",
+            "iam.googleapis.com/Role",
+        ],
+    }
+
+    # Flatten asset types we care about
+    selected_asset_types = set(x for vals in CATEGORY_MAP.values() for x in vals)
+
+    # Compute filtered resources (only the categories above) for Overview metrics
+    filtered_resources_for_overview = [r for r in resources if str(r.get("asset_type") or "") in selected_asset_types]
+    df_filtered = pd.DataFrame(filtered_resources_for_overview) if filtered_resources_for_overview else pd.DataFrame()
+
     metrics_col1, metrics_col2, metrics_col3, metrics_col4 = st.columns(4)
-    cost_summary = summarize_costs(resources)
-    metrics_col1.metric("Total Resources", len(df))
-    metrics_col2.metric("Unique Asset Types", df["asset_type"].nunique())
+    cost_summary = summarize_costs(filtered_resources_for_overview)
+    metrics_col1.metric("Total Resources", len(df_filtered))
+    metrics_col2.metric("Unique Asset Types", df_filtered["asset_type"].nunique() if not df_filtered.empty else 0)
     metrics_col3.metric("Estimated Monthly Cost", f"${cost_summary['estimated_monthly_cost']:.2f}")
     metrics_col4.metric("Estimated Daily Spend", f"${cost_summary['daily_spending']:.2f}")
 
@@ -213,15 +256,15 @@ else:
     if selected_type == "Overview":
         st.subheader("Overview")
         overview_col1, overview_col2, overview_col3 = st.columns(3)
-        overview_col1.metric("Unique Projects", df["project"].nunique())
-        overview_col2.metric("Likely Running", len(filter_likely_running(resources)))
-        overview_top_service = df.groupby("asset_class")["estimated_monthly_cost"].sum().sort_values(ascending=False)
+        overview_col1.metric("Unique Projects", df_filtered["project"].nunique() if not df_filtered.empty else 0)
+        overview_col2.metric("Likely Running", len(filter_likely_running(filtered_resources_for_overview)))
+        overview_top_service = df_filtered.groupby("asset_class")["estimated_monthly_cost"].sum().sort_values(ascending=False) if not df_filtered.empty else pd.Series()
         overview_col3.metric("Top Service", overview_top_service.index[0] if not overview_top_service.empty else "None")
 
         st.subheader("Live Resource List")
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        st.dataframe(df_filtered, use_container_width=True, hide_index=True)
 
-        csv_data = df.to_csv(index=False).encode("utf-8")
+        csv_data = df_filtered.to_csv(index=False).encode("utf-8")
         st.download_button(
             "Download CSV",
             data=csv_data,
