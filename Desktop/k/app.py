@@ -19,6 +19,56 @@ from gcp_asset_service import (
 )
 
 
+CATEGORY_MAP: dict[str, list[str]] = {
+    "Compute": ["compute.googleapis.com/Instance", "compute.googleapis.com/Disk", "compute.googleapis.com/ForwardingRule"],
+    "Databases": ["sqladmin.googleapis.com/Instance", "spanner.googleapis.com/Instance"],
+    "Networking": ["compute.googleapis.com/Network", "compute.googleapis.com/Firewall", "compute.googleapis.com/ForwardingRule"],
+    "Storage": ["storage.googleapis.com/Bucket"],
+    "Kubernetes": ["container.googleapis.com/Cluster"],
+    "Security": ["cloudkms.googleapis.com/KeyRing", "cloudkms.googleapis.com/CryptoKey"],
+    "Billing": ["billingbudgets.googleapis.com/Budget"],
+    "IAM": ["iam.googleapis.com/ServiceAccount", "iam.googleapis.com/ServiceAccountKey", "iam.googleapis.com/Role"],
+}
+
+
+@st.cache_data(show_spinner=False)
+def build_dashboard_context(resources: list[dict[str, object]]) -> dict[str, object]:
+    df = pd.DataFrame(resources) if resources else pd.DataFrame()
+    selected_asset_types = {asset_type for values in CATEGORY_MAP.values() for asset_type in values}
+    filtered_resources = [r for r in resources if str(r.get("asset_type") or "") in selected_asset_types]
+    df_filtered = pd.DataFrame(filtered_resources) if filtered_resources else pd.DataFrame()
+
+    category_rows = []
+    for category_name, asset_types in CATEGORY_MAP.items():
+        category_frame = df_filtered[df_filtered["asset_type"].isin(asset_types)] if not df_filtered.empty else pd.DataFrame()
+        category_rows.append(
+            {
+                "category": category_name,
+                "count": len(category_frame),
+                "estimated_monthly_cost": float(category_frame["estimated_monthly_cost"].sum()) if not category_frame.empty else 0.0,
+            }
+        )
+
+    category_summary_df = pd.DataFrame(category_rows)
+    cost_summary = summarize_costs(filtered_resources)
+    top_service = "None"
+    if not df_filtered.empty:
+        top_service_series = df_filtered.groupby("asset_class")["estimated_monthly_cost"].sum().sort_values(ascending=False)
+        if not top_service_series.empty:
+            top_service = str(top_service_series.index[0])
+
+    return {
+        "df": df,
+        "df_filtered": df_filtered,
+        "filtered_resources": filtered_resources,
+        "category_summary_df": category_summary_df,
+        "cost_summary": cost_summary,
+        "top_service": top_service,
+        "unique_projects": df_filtered["project"].nunique() if not df_filtered.empty else 0,
+        "likely_running_count": len(filter_likely_running(filtered_resources)),
+    }
+
+
 st.set_page_config(page_title="GCP Live Resource Dashboard", page_icon="☁", layout="wide")
 
 st.title("GCP Live Resource Dashboard")
@@ -78,7 +128,7 @@ with st.sidebar:
     
     st.divider()
     
-    st.button("Fetch Live Resources", type="primary", key="sidebar_fetch_btn")
+    st.button("Fetch Live Resources", type="primary", key="sidebar_fetch_btn", on_click=trigger_fetch)
     
     st.divider()
     
@@ -105,6 +155,10 @@ if "fetch_clicked" not in st.session_state:
     st.session_state.fetch_clicked = False
 if "selected_live_resource" not in st.session_state:
     st.session_state.selected_live_resource = None
+
+
+def trigger_fetch() -> None:
+    st.session_state.fetch_clicked = True
 
 def load_resources() -> list[dict[str, object]]:
     with st.spinner("Fetching live resources from GCP..."):
@@ -142,11 +196,6 @@ if auto_refresh_enabled and st.session_state.resources:
         st.session_state.resources = load_resources()
     except GCPDashboardError as exc:
         st.warning(str(exc))
-
-# Check if sidebar fetch button was clicked
-if st.session_state.get("sidebar_fetch_btn"):
-    st.session_state.fetch_clicked = True
-    st.rerun()
 
 resources = st.session_state.resources
 
@@ -233,36 +282,15 @@ else:
         unsafe_allow_html=True,
     )
 
-    # Category -> asset types mapping. Overview and Live Resources will only consider these.
-    CATEGORY_MAP = {
-        "Compute": ["compute.googleapis.com/Instance", "compute.googleapis.com/Disk", "compute.googleapis.com/ForwardingRule"],
-        "Databases": ["sqladmin.googleapis.com/Instance", "spanner.googleapis.com/Instance"],
-        "Networking": ["compute.googleapis.com/Network", "compute.googleapis.com/Firewall", "compute.googleapis.com/ForwardingRule"],
-        "Storage": ["storage.googleapis.com/Bucket"],
-        "Kubernetes": ["container.googleapis.com/Cluster"],
-        "Security": ["cloudkms.googleapis.com/KeyRing", "cloudkms.googleapis.com/CryptoKey"],
-        "Billing": ["billingbudgets.googleapis.com/Budget"],
-        "IAM": ["iam.googleapis.com/ServiceAccount", "iam.googleapis.com/ServiceAccountKey", "iam.googleapis.com/Role"],
-    }
-
-    # Flatten asset types we care about
-    selected_asset_types = set(asset_type for values in CATEGORY_MAP.values() for asset_type in values)
-
-    # Compute filtered resources (only the categories above) for Overview metrics
-    filtered_resources_for_overview = [r for r in resources if str(r.get("asset_type") or "") in selected_asset_types]
-    df_filtered = pd.DataFrame(filtered_resources_for_overview) if filtered_resources_for_overview else pd.DataFrame()
-
-    category_rows = []
-    for category_name, asset_types in CATEGORY_MAP.items():
-        category_frame = df_filtered[df_filtered["asset_type"].isin(asset_types)] if not df_filtered.empty else pd.DataFrame()
-        category_rows.append(
-            {
-                "category": category_name,
-                "count": len(category_frame),
-                "estimated_monthly_cost": float(category_frame["estimated_monthly_cost"].sum()) if not category_frame.empty else 0.0,
-            }
-        )
-    category_summary_df = pd.DataFrame(category_rows)
+    dashboard = build_dashboard_context(resources)
+    df = dashboard["df"]
+    df_filtered = dashboard["df_filtered"]
+    filtered_resources_for_overview = dashboard["filtered_resources"]
+    category_summary_df = dashboard["category_summary_df"]
+    cost_summary = dashboard["cost_summary"]
+    top_service = dashboard["top_service"]
+    unique_projects = dashboard["unique_projects"]
+    likely_running_count = dashboard["likely_running_count"]
 
     st.markdown(
         """
@@ -281,7 +309,6 @@ else:
     hero_c.markdown('<div class="feature-card"><strong>3. Take action faster</strong><span>Use cost analytics, monitoring, and the AI assistant to spot waste.</span></div>', unsafe_allow_html=True)
 
     metrics_col1, metrics_col2, metrics_col3, metrics_col4 = st.columns(4)
-    cost_summary = summarize_costs(filtered_resources_for_overview)
     metrics_col1.metric("Total Resources", len(df_filtered))
     metrics_col2.metric("Unique Asset Types", df_filtered["asset_type"].nunique() if not df_filtered.empty else 0)
     metrics_col3.metric("Estimated Monthly Cost", f"${cost_summary['estimated_monthly_cost']:.2f}")
@@ -295,10 +322,9 @@ else:
     if selected_type == "Overview":
         st.subheader("Overview")
         overview_col1, overview_col2, overview_col3 = st.columns(3)
-        overview_col1.metric("Unique Projects", df_filtered["project"].nunique() if not df_filtered.empty else 0)
-        overview_col2.metric("Likely Running", len(filter_likely_running(filtered_resources_for_overview)))
-        overview_top_service = df_filtered.groupby("asset_class")["estimated_monthly_cost"].sum().sort_values(ascending=False) if not df_filtered.empty else pd.Series()
-        overview_col3.metric("Top Service", overview_top_service.index[0] if not overview_top_service.empty else "None")
+        overview_col1.metric("Unique Projects", unique_projects)
+        overview_col2.metric("Likely Running", likely_running_count)
+        overview_col3.metric("Top Service", top_service)
 
         st.markdown('<div class="section-card"><h3>Category Snapshot</h3><p style="margin:0;color:#cbd5e1;">This view only includes the categories you requested.</p></div>', unsafe_allow_html=True)
         if not category_summary_df.empty:
