@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import pandas as pd
 import plotly.express as px
 import streamlit as st
@@ -52,10 +54,14 @@ def build_dashboard_context(resources: list[dict[str, object]]) -> dict[str, obj
     category_summary_df = pd.DataFrame(category_rows)
     cost_summary = summarize_costs(filtered_resources)
     top_service = "None"
+    health_score = 0
     if not df_filtered.empty:
         top_service_series = df_filtered.groupby("asset_class")["estimated_monthly_cost"].sum().sort_values(ascending=False)
         if not top_service_series.empty:
             top_service = str(top_service_series.index[0])
+        active_ratio = len(filter_likely_running(filtered_resources)) / max(len(filtered_resources), 1)
+        known_owner_ratio = 1.0 - (df_filtered["owner_hint"].eq("Unknown").mean() if not df_filtered.empty else 1.0)
+        health_score = int(round(min(100, max(0, (active_ratio * 55) + (known_owner_ratio * 45)))))
 
     return {
         "df": df,
@@ -66,24 +72,34 @@ def build_dashboard_context(resources: list[dict[str, object]]) -> dict[str, obj
         "top_service": top_service,
         "unique_projects": df_filtered["project"].nunique() if not df_filtered.empty else 0,
         "likely_running_count": len(filter_likely_running(filtered_resources)),
+        "health_score": health_score,
     }
+
+
+def format_elapsed_time(timestamp: datetime | None) -> str:
+    if timestamp is None:
+        return "Not refreshed yet"
+    delta_seconds = max(int((datetime.now(timezone.utc) - timestamp).total_seconds()), 0)
+    if delta_seconds < 60:
+        return f"{delta_seconds}s ago"
+    if delta_seconds < 3600:
+        return f"{delta_seconds // 60}m ago"
+    return f"{delta_seconds // 3600}h ago"
 
 
 st.set_page_config(page_title="GCP Live Resource Dashboard", page_icon="☁", layout="wide")
 
-st.title("GCP Live Resource Dashboard")
+st.title("AI-Powered Cloud Infrastructure Intelligence Platform")
 st.caption("Fast live GCP inventory, cost signals, and action views in one place.")
 
 with st.sidebar:
     st.header("Configuration")
     st.markdown(
         """
-1. Upload a service account JSON.
-2. Click **Fetch Live Resources**.
-3. Review the live dashboard.
+Upload a service account JSON and fetch your live GCP inventory.
         """
     )
-    st.info("The key stays in memory only.")
+    st.info("Secure session: key stays in memory only.")
     
     uploaded_file = st.file_uploader("Upload service account JSON", type=["json"])
     
@@ -132,7 +148,7 @@ with st.sidebar:
     
     st.divider()
     
-    st.subheader("📋 Navigation")
+    st.subheader("Navigation")
     page_selected = st.radio(
         "Select Page",
         ["Overview", "Cost Analytics", "Live Resources", "Monitoring", "AI Assistant"],
@@ -155,6 +171,10 @@ if "fetch_clicked" not in st.session_state:
     st.session_state.fetch_clicked = False
 if "selected_live_resource" not in st.session_state:
     st.session_state.selected_live_resource = None
+if "last_refresh_at" not in st.session_state:
+    st.session_state.last_refresh_at = None
+if "connection_state" not in st.session_state:
+    st.session_state.connection_state = "Disconnected"
 
 def load_resources() -> list[dict[str, object]]:
     with st.spinner("Fetching live resources from GCP..."):
@@ -175,22 +195,30 @@ if st.session_state.get("fetch_clicked"):
     try:
         resources = load_resources()
     except GCPDashboardError as exc:
+        st.session_state.connection_state = "Error"
         st.error(str(exc))
         st.stop()
 
     if not resources:
+        st.session_state.connection_state = "Connected"
+        st.session_state.last_refresh_at = datetime.now(timezone.utc)
         st.warning("No resources found with the current scope/query.")
         st.session_state.fetch_clicked = False
         st.stop()
 
     st.session_state.resources = resources
     st.session_state.fetch_clicked = False
+    st.session_state.connection_state = "Connected"
+    st.session_state.last_refresh_at = datetime.now(timezone.utc)
 
 if auto_refresh_enabled and st.session_state.resources:
     st_autorefresh(interval=refresh_seconds * 1000, key="gcp_live_refresh")
     try:
         st.session_state.resources = load_resources()
+        st.session_state.connection_state = "Connected"
+        st.session_state.last_refresh_at = datetime.now(timezone.utc)
     except GCPDashboardError as exc:
+        st.session_state.connection_state = "Error"
         st.warning(str(exc))
 
 resources = st.session_state.resources
@@ -287,6 +315,25 @@ else:
     top_service = dashboard["top_service"]
     unique_projects = dashboard["unique_projects"]
     likely_running_count = dashboard["likely_running_count"]
+    health_score = dashboard["health_score"]
+
+    status_left, status_mid, status_right, status_tail = st.columns([1.15, 1.15, 1.05, 1.05])
+    status_left.markdown(
+        f'<div class="feature-card"><strong>Cloud Status</strong><span>{"🟢 Connected to GCP" if st.session_state.connection_state == "Connected" else "🟡 Waiting for refresh" if st.session_state.connection_state == "Disconnected" else "🔴 Refresh error"}</span></div>',
+        unsafe_allow_html=True,
+    )
+    status_mid.markdown(
+        f'<div class="feature-card"><strong>Live Sync</strong><span>{"Active" if st.session_state.resources else "Ready"} · refresh {refresh_seconds}s</span></div>',
+        unsafe_allow_html=True,
+    )
+    status_right.markdown(
+        f'<div class="feature-card"><strong>Last Refresh</strong><span>{format_elapsed_time(st.session_state.last_refresh_at)}</span></div>',
+        unsafe_allow_html=True,
+    )
+    status_tail.markdown(
+        f'<div class="feature-card"><strong>Health Score</strong><span>{health_score}/100</span></div>',
+        unsafe_allow_html=True,
+    )
 
     st.markdown(
         """
@@ -401,11 +448,20 @@ else:
         st.subheader("Live Resources")
         st.caption("Choose a category to inspect matching resources.")
 
+        summary_cols = st.columns(4)
+        for idx, (cat_label, asset_list) in enumerate(CATEGORY_MAP.items()):
+            if idx >= 4:
+                break
+            count = int(df[df["asset_type"].isin(asset_list)].shape[0]) if not df.empty else 0
+            category_cost = float(df[df["asset_type"].isin(asset_list)]["estimated_monthly_cost"].sum()) if not df.empty else 0.0
+            summary_cols[idx].markdown(
+                f'<div class="feature-card"><strong>{cat_label}</strong><span>{count} items · ${category_cost:.2f}/mo</span></div>',
+                unsafe_allow_html=True,
+            )
+
         cols = st.columns(2)
         for idx, (cat_label, asset_list) in enumerate(CATEGORY_MAP.items()):
-            count = 0
-            if not df.empty:
-                count = df[df["asset_type"].isin(asset_list)].shape[0]
+            count = int(df[df["asset_type"].isin(asset_list)].shape[0]) if not df.empty else 0
 
             col = cols[idx % 2]
             label = f"{cat_label} ({count})"
@@ -421,13 +477,21 @@ else:
 
             st.divider()
             st.subheader(f"{selected_cat} — {len(filtered_df)} items")
-            st.metric("Count", len(filtered_df))
+            detail_a, detail_b, detail_c = st.columns(3)
+            detail_a.metric("Count", len(filtered_df))
             if not filtered_df.empty:
-                st.metric("Estimated Monthly Cost", f"${filtered_df['estimated_monthly_cost'].sum():.2f}")
-                st.dataframe(filtered_df, use_container_width=True, hide_index=True)
+                detail_b.metric("Estimated Monthly Cost", f"${filtered_df['estimated_monthly_cost'].sum():.2f}")
+                detail_c.metric("Top Asset Type", filtered_df["asset_type"].mode().iloc[0])
+                st.dataframe(
+                    filtered_df[["display_name", "asset_type", "location", "state", "estimated_monthly_cost", "owner_hint"]],
+                    use_container_width=True,
+                    hide_index=True,
+                )
                 csv_data = filtered_df.to_csv(index=False).encode("utf-8")
                 st.download_button(f"Download {selected_cat} CSV", data=csv_data, file_name=f"gcp_{selected_cat.lower().replace(' ', '_')}.csv")
             else:
+                detail_b.metric("Estimated Monthly Cost", "$0.00")
+                detail_c.metric("Top Asset Type", "None")
                 st.info("No items found in this category.")
 
             if st.button("← Back to Live Resources"):
