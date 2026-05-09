@@ -79,6 +79,16 @@ with st.sidebar:
     st.divider()
     
     st.button("Fetch Live Resources", type="primary", key="sidebar_fetch_btn")
+    
+    st.divider()
+    
+    st.subheader("📋 Navigation")
+    page_selected = st.radio(
+        "Select Page",
+        ["Overview", "Cost Analytics", "Live Resources", "Monitoring", "AI Assistant"],
+        index=0,
+        label_visibility="collapsed"
+    )
 
 if "resources" not in st.session_state:
     st.session_state.resources = []
@@ -153,17 +163,6 @@ else:
     metrics_col4.metric("Estimated Daily Spend", f"${cost_summary['daily_spending']:.2f}")
 
     st.caption("Resources are refreshed from Cloud Asset Inventory on demand, then analyzed locally for cost, search, and recommendations.")
-
-    # Main navigation
-    st.subheader("📋 Navigation")
-    page_selected = st.radio(
-        "Select Page",
-        ["Overview", "Cost Analytics", "Live Resources", "Monitoring", "Ownership", "AI Assistant"],
-        index=0,
-        label_visibility="collapsed"
-    )
-
-    st.divider()
 
     # Define resource types with labels and asset types (for Live Resources page)
     resource_types = [
@@ -346,15 +345,6 @@ else:
                                         st.warning(str(exc))
                     except GCPDashboardError as exc:
                         st.warning(str(exc))
-
-    # OWNERSHIP PAGE
-    elif selected_type == "Ownership":
-        st.subheader("Resource Ownership Tracking")
-        ownership_frame = df[["display_name", "asset_type", "owner_hint", "created_at", "updated_at", "labels", "tags"]].copy()
-        st.dataframe(ownership_frame.sort_values("created_at", ascending=False), use_container_width=True, hide_index=True)
-        unlabeled = df[df["owner_hint"].eq("Unknown")]
-        if not unlabeled.empty:
-            st.warning(f"{len(unlabeled)} resources do not show an obvious owner label or tag yet.")
 
     # AI ASSISTANT PAGE
     elif selected_type == "AI Assistant":
