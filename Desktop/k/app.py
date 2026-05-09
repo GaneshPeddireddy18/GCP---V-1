@@ -164,18 +164,48 @@ else:
 
     st.caption("Resources are refreshed from Cloud Asset Inventory on demand, then analyzed locally for cost, search, and recommendations.")
 
-    # Define resource types with labels and asset types (for Live Resources page)
-    resource_types = [
-        ("💻 Instances", "compute.googleapis.com/Instance"),
-        ("🪣 Storage Buckets", "storage.googleapis.com/Bucket"),
-        ("🗄️ Cloud SQL", "sqladmin.googleapis.com/Instance"),
-        ("⚡ Cloud Functions", "cloudfunctions.googleapis.com/CloudFunction"),
-        ("🐳 GKE Clusters", "container.googleapis.com/Cluster"),
-        ("☁️ Cloud Run", "run.googleapis.com/Service"),
-        ("💾 Disks", "compute.googleapis.com/Disk"),
-        ("📮 Pub/Sub Topics", "pubsub.googleapis.com/Topic"),
-        ("🔌 VPC Networks", "compute.googleapis.com/Network"),
-    ]
+    # Category -> asset types mapping. Overview and Live Resources will only consider these.
+    CATEGORY_MAP = {
+        "Compute": [
+            "compute.googleapis.com/Instance",
+            "compute.googleapis.com/Disk",
+            "compute.googleapis.com/ForwardingRule",
+        ],
+        "Databases": [
+            "sqladmin.googleapis.com/Instance",
+            "spanner.googleapis.com/Instance",
+        ],
+        "Networking": [
+            "compute.googleapis.com/Network",
+            "compute.googleapis.com/Firewall",
+            "compute.googleapis.com/ForwardingRule",
+        ],
+        "Storage": [
+            "storage.googleapis.com/Bucket",
+        ],
+        "Kubernetes": [
+            "container.googleapis.com/Cluster",
+        ],
+        "Security": [
+            "cloudkms.googleapis.com/KeyRing",
+            "cloudkms.googleapis.com/CryptoKey",
+        ],
+        "Billing": [
+            "billingbudgets.googleapis.com/Budget",
+        ],
+        "IAM": [
+            "iam.googleapis.com/ServiceAccount",
+            "iam.googleapis.com/ServiceAccountKey",
+            "iam.googleapis.com/Role",
+        ],
+    }
+
+    # Flatten asset types we care about
+    selected_asset_types = set(x for vals in CATEGORY_MAP.values() for x in vals)
+
+    # Compute filtered resources (only the categories above) for Overview metrics
+    filtered_resources_for_overview = [r for r in resources if str(r.get("asset_type") or "") in selected_asset_types]
+    df_filtered = pd.DataFrame(filtered_resources_for_overview) if filtered_resources_for_overview else pd.DataFrame()
 
     selected_type = page_selected
 
@@ -238,49 +268,37 @@ else:
     # LIVE RESOURCES PAGE
     elif selected_type == "Live Resources":
         st.subheader("📊 Live Resources")
-        st.caption("Click any resource type to see all instances")
-        
-        # Create a 2-column layout for resource type buttons with counts
+        st.caption("Click a category to view the matching resources in your account")
+
         cols = st.columns(2)
-        for idx, (label, asset_type) in enumerate(resource_types):
-            count = len(df[df["asset_type"] == asset_type]) if not df.empty else 0
-            
+        for idx, (cat_label, asset_list) in enumerate(CATEGORY_MAP.items()):
+            count = 0
+            if not df.empty:
+                count = df[df["asset_type"].isin(asset_list)].shape[0]
+
             col = cols[idx % 2]
-            button_label = f"{label} ({count})"
-            
-            if col.button(button_label, use_container_width=True, key=f"live_resource_{idx}"):
-                st.session_state.selected_live_resource = asset_type
+            label = f"{cat_label} ({count})"
+            if col.button(label, use_container_width=True, key=f"cat_btn_{idx}"):
+                st.session_state.selected_live_resource = cat_label
                 st.rerun()
 
-        # If a specific resource type is selected from Live Resources, show it
+        # Show selected category details
         if st.session_state.get("selected_live_resource"):
-            selected_asset_type = st.session_state.selected_live_resource
-            filtered_df = df[df["asset_type"] == selected_asset_type]
-            
-            if filtered_df.empty:
-                st.info(f"No resources found for this type")
-            else:
-                resource_name = selected_asset_type.split("/")[-1]
-                st.divider()
-                st.subheader(f"All {resource_name}s ({len(filtered_df)} found)")
-                st.metric(f"Count", len(filtered_df))
-                
-                if not filtered_df.empty:
-                    total_cost = filtered_df["estimated_monthly_cost"].sum()
-                    st.metric(f"Estimated Monthly Cost", f"${total_cost:.2f}")
-                
-                st.subheader("Resource Details")
+            selected_cat = st.session_state.selected_live_resource
+            types = CATEGORY_MAP.get(selected_cat, [])
+            filtered_df = df[df["asset_type"].isin(types)] if not df.empty else pd.DataFrame()
+
+            st.divider()
+            st.subheader(f"{selected_cat} — {len(filtered_df)} resources")
+            st.metric("Count", len(filtered_df))
+            if not filtered_df.empty:
+                st.metric("Estimated Monthly Cost", f"${filtered_df['estimated_monthly_cost'].sum():.2f}")
                 st.dataframe(filtered_df, use_container_width=True, hide_index=True)
-                
                 csv_data = filtered_df.to_csv(index=False).encode("utf-8")
-                st.download_button(
-                    f"Download {resource_name}s as CSV",
-                    data=csv_data,
-                    file_name=f"gcp_{resource_name.lower()}s.csv",
-                    mime="text/csv",
-                    key=f"download_{selected_asset_type}"
-                )
-            
+                st.download_button(f"Download {selected_cat} CSV", data=csv_data, file_name=f"gcp_{selected_cat.lower().replace(' ', '_')}.csv")
+            else:
+                st.info("No resources found for this category.")
+
             if st.button("← Back to Live Resources"):
                 st.session_state.selected_live_resource = None
                 st.rerun()
