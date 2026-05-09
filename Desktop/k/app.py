@@ -350,22 +350,28 @@ Upload a service account JSON and fetch your live GCP inventory.
     st.divider()
     
     auto_refresh_enabled = st.checkbox("Auto refresh live data", value=True)
-    refresh_seconds = st.selectbox("Refresh interval", [15, 30, 60], index=1)
+    refresh_seconds = st.selectbox("Refresh interval", [5, 10, 15, 30, 60], index=1)
     
     st.divider()
     
     if st.button("Fetch Live Resources", type="primary"):
         st.session_state.fetch_clicked = True
     
-    if st.button("🔄 Refresh Data", help="Re-fetch all resource metadata to see updated timestamps"):
-        st.session_state.resources = []
-        st.session_state.last_refresh_at = None
-        st.session_state.fetch_clicked = True
-        st.rerun()
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("🔄 Refresh Data", help="Re-fetch all resource metadata to see updated timestamps"):
+            st.session_state.resources = []
+            st.session_state.last_refresh_at = None
+            st.session_state.fetch_clicked = True
+            st.rerun()
+    with col2:
+        if st.button("⚡ Quick Refresh", help="Instantly refresh timestamps for object changes"):
+            st.session_state.fetch_clicked = True
+            st.rerun()
     
     st.divider()
     
-    st.caption("💡 Tip: After modifying resources in GCP console, click Refresh Data to see updated timestamps.")
+    st.caption("💡 Live updates: Auto-refresh checks every 5-60 seconds. Click Quick Refresh for instant updates after object changes.")
     
     st.markdown("### 🚀 Navigation")
     page_key = st.radio(
