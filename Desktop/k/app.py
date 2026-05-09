@@ -155,48 +155,130 @@ df = pd.DataFrame(resources) if resources else pd.DataFrame()
 if not resources:
     st.info("Upload a service account JSON and click 'Fetch Live Resources' in the sidebar to begin.")
 else:
+    st.markdown(
+        """
+        <style>
+        .stApp {
+            background: radial-gradient(circle at top, rgba(59, 130, 246, 0.12), transparent 26%), linear-gradient(180deg, #0b1020 0%, #111827 60%, #0f172a 100%);
+            color: #e5e7eb;
+        }
+        [data-testid="stSidebar"] {
+            background: linear-gradient(180deg, #111827 0%, #0f172a 100%);
+            border-right: 1px solid rgba(255, 255, 255, 0.08);
+        }
+        .block-container {
+            padding-top: 1.2rem;
+            padding-bottom: 2rem;
+        }
+        .hero-card, .feature-card, .section-card {
+            background: rgba(15, 23, 42, 0.72);
+            border: 1px solid rgba(148, 163, 184, 0.18);
+            border-radius: 18px;
+            padding: 18px 20px;
+            box-shadow: 0 18px 36px rgba(0, 0, 0, 0.22);
+            backdrop-filter: blur(14px);
+        }
+        .hero-card h2, .section-card h3 {
+            margin: 0 0 8px 0;
+        }
+        .hero-badge {
+            display: inline-block;
+            padding: 6px 10px;
+            border-radius: 999px;
+            background: rgba(96, 165, 250, 0.16);
+            color: #bfdbfe;
+            font-size: 0.78rem;
+            margin-bottom: 10px;
+        }
+        .feature-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 12px;
+            margin-top: 12px;
+        }
+        .feature-card strong {
+            display: block;
+            font-size: 1.02rem;
+            margin-bottom: 6px;
+            color: #f8fafc;
+        }
+        .feature-card span {
+            color: #cbd5e1;
+            font-size: 0.92rem;
+            line-height: 1.45;
+        }
+        div[data-testid="stMetric"] {
+            background: rgba(15, 23, 42, 0.68);
+            border: 1px solid rgba(148, 163, 184, 0.16);
+            border-radius: 16px;
+            padding: 14px 16px;
+            box-shadow: 0 14px 28px rgba(0, 0, 0, 0.16);
+        }
+        div[data-testid="stMetric"] label {
+            color: #cbd5e1 !important;
+        }
+        .stButton > button {
+            border-radius: 14px;
+            border: 1px solid rgba(96, 165, 250, 0.22);
+            background: linear-gradient(135deg, #3b82f6 0%, #0ea5e9 100%);
+            color: white;
+            font-weight: 600;
+        }
+        .stButton > button:hover {
+            filter: brightness(1.08);
+            border-color: rgba(96, 165, 250, 0.42);
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
     # Category -> asset types mapping. Overview and Live Resources will only consider these.
     CATEGORY_MAP = {
-        "Compute": [
-            "compute.googleapis.com/Instance",
-            "compute.googleapis.com/Disk",
-            "compute.googleapis.com/ForwardingRule",
-        ],
-        "Databases": [
-            "sqladmin.googleapis.com/Instance",
-            "spanner.googleapis.com/Instance",
-        ],
-        "Networking": [
-            "compute.googleapis.com/Network",
-            "compute.googleapis.com/Firewall",
-            "compute.googleapis.com/ForwardingRule",
-        ],
-        "Storage": [
-            "storage.googleapis.com/Bucket",
-        ],
-        "Kubernetes": [
-            "container.googleapis.com/Cluster",
-        ],
-        "Security": [
-            "cloudkms.googleapis.com/KeyRing",
-            "cloudkms.googleapis.com/CryptoKey",
-        ],
-        "Billing": [
-            "billingbudgets.googleapis.com/Budget",
-        ],
-        "IAM": [
-            "iam.googleapis.com/ServiceAccount",
-            "iam.googleapis.com/ServiceAccountKey",
-            "iam.googleapis.com/Role",
-        ],
+        "Compute": ["compute.googleapis.com/Instance", "compute.googleapis.com/Disk", "compute.googleapis.com/ForwardingRule"],
+        "Databases": ["sqladmin.googleapis.com/Instance", "spanner.googleapis.com/Instance"],
+        "Networking": ["compute.googleapis.com/Network", "compute.googleapis.com/Firewall", "compute.googleapis.com/ForwardingRule"],
+        "Storage": ["storage.googleapis.com/Bucket"],
+        "Kubernetes": ["container.googleapis.com/Cluster"],
+        "Security": ["cloudkms.googleapis.com/KeyRing", "cloudkms.googleapis.com/CryptoKey"],
+        "Billing": ["billingbudgets.googleapis.com/Budget"],
+        "IAM": ["iam.googleapis.com/ServiceAccount", "iam.googleapis.com/ServiceAccountKey", "iam.googleapis.com/Role"],
     }
 
     # Flatten asset types we care about
-    selected_asset_types = set(x for vals in CATEGORY_MAP.values() for x in vals)
+    selected_asset_types = set(asset_type for values in CATEGORY_MAP.values() for asset_type in values)
 
     # Compute filtered resources (only the categories above) for Overview metrics
     filtered_resources_for_overview = [r for r in resources if str(r.get("asset_type") or "") in selected_asset_types]
     df_filtered = pd.DataFrame(filtered_resources_for_overview) if filtered_resources_for_overview else pd.DataFrame()
+
+    category_rows = []
+    for category_name, asset_types in CATEGORY_MAP.items():
+        category_frame = df_filtered[df_filtered["asset_type"].isin(asset_types)] if not df_filtered.empty else pd.DataFrame()
+        category_rows.append(
+            {
+                "category": category_name,
+                "count": len(category_frame),
+                "estimated_monthly_cost": float(category_frame["estimated_monthly_cost"].sum()) if not category_frame.empty else 0.0,
+            }
+        )
+    category_summary_df = pd.DataFrame(category_rows)
+
+    st.markdown(
+        """
+        <div class="hero-card">
+            <div class="hero-badge">Simple live inventory for the 8 core GCP categories</div>
+            <h2>One dashboard to see what is running, what it costs, and where to act first</h2>
+            <p style="margin:0;color:#cbd5e1;line-height:1.6;">Use the sidebar to fetch live resources from your service account. The dashboard only counts Compute, Databases, Networking, Storage, Kubernetes, Security, Billing, and IAM.</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    hero_a, hero_b, hero_c = st.columns(3)
+    hero_a.markdown('<div class="feature-card"><strong>1. Fetch live inventory</strong><span>Upload a service account JSON and pull Cloud Asset Inventory in one click.</span></div>', unsafe_allow_html=True)
+    hero_b.markdown('<div class="feature-card"><strong>2. See only core services</strong><span>Overview and Live Resources are filtered to the categories you asked for.</span></div>', unsafe_allow_html=True)
+    hero_c.markdown('<div class="feature-card"><strong>3. Take action faster</strong><span>Use cost analytics, monitoring, and the AI assistant to spot waste.</span></div>', unsafe_allow_html=True)
 
     metrics_col1, metrics_col2, metrics_col3, metrics_col4 = st.columns(4)
     cost_summary = summarize_costs(filtered_resources_for_overview)
@@ -206,49 +288,6 @@ else:
     metrics_col4.metric("Estimated Daily Spend", f"${cost_summary['daily_spending']:.2f}")
 
     st.caption("Resources are refreshed from Cloud Asset Inventory on demand, then analyzed locally for cost, search, and recommendations.")
-
-    # Category -> asset types mapping. Overview and Live Resources will only consider these.
-    CATEGORY_MAP = {
-        "Compute": [
-            "compute.googleapis.com/Instance",
-            "compute.googleapis.com/Disk",
-            "compute.googleapis.com/ForwardingRule",
-        ],
-        "Databases": [
-            "sqladmin.googleapis.com/Instance",
-            "spanner.googleapis.com/Instance",
-        ],
-        "Networking": [
-            "compute.googleapis.com/Network",
-            "compute.googleapis.com/Firewall",
-            "compute.googleapis.com/ForwardingRule",
-        ],
-        "Storage": [
-            "storage.googleapis.com/Bucket",
-        ],
-        "Kubernetes": [
-            "container.googleapis.com/Cluster",
-        ],
-        "Security": [
-            "cloudkms.googleapis.com/KeyRing",
-            "cloudkms.googleapis.com/CryptoKey",
-        ],
-        "Billing": [
-            "billingbudgets.googleapis.com/Budget",
-        ],
-        "IAM": [
-            "iam.googleapis.com/ServiceAccount",
-            "iam.googleapis.com/ServiceAccountKey",
-            "iam.googleapis.com/Role",
-        ],
-    }
-
-    # Flatten asset types we care about
-    selected_asset_types = set(x for vals in CATEGORY_MAP.values() for x in vals)
-
-    # Compute filtered resources (only the categories above) for Overview metrics
-    filtered_resources_for_overview = [r for r in resources if str(r.get("asset_type") or "") in selected_asset_types]
-    df_filtered = pd.DataFrame(filtered_resources_for_overview) if filtered_resources_for_overview else pd.DataFrame()
 
     selected_type = page_selected
 
@@ -260,6 +299,33 @@ else:
         overview_col2.metric("Likely Running", len(filter_likely_running(filtered_resources_for_overview)))
         overview_top_service = df_filtered.groupby("asset_class")["estimated_monthly_cost"].sum().sort_values(ascending=False) if not df_filtered.empty else pd.Series()
         overview_col3.metric("Top Service", overview_top_service.index[0] if not overview_top_service.empty else "None")
+
+        st.markdown('<div class="section-card"><h3>Category Snapshot</h3><p style="margin:0;color:#cbd5e1;">This view only includes the categories you requested.</p></div>', unsafe_allow_html=True)
+        if not category_summary_df.empty:
+            chart_col, table_col = st.columns([1.3, 1])
+            with chart_col:
+                category_chart = px.bar(
+                    category_summary_df.sort_values("count", ascending=False),
+                    x="category",
+                    y="count",
+                    color="category",
+                    title=None,
+                )
+                category_chart.update_layout(
+                    showlegend=False,
+                    margin=dict(l=0, r=0, t=10, b=0),
+                    height=360,
+                    paper_bgcolor="rgba(0,0,0,0)",
+                    plot_bgcolor="rgba(0,0,0,0)",
+                    font=dict(color="#e5e7eb"),
+                )
+                st.plotly_chart(category_chart, use_container_width=True)
+            with table_col:
+                st.dataframe(
+                    category_summary_df.sort_values("count", ascending=False),
+                    use_container_width=True,
+                    hide_index=True,
+                )
 
         st.subheader("Live Resource List")
         st.dataframe(df_filtered, use_container_width=True, hide_index=True)
