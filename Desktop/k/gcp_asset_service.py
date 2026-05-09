@@ -238,6 +238,32 @@ def normalize_resource(resource: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
+def enrich_bucket_metadata(resource: dict[str, Any], credentials: service_account.Credentials) -> dict[str, Any]:
+    """Fetch real Cloud Storage bucket metadata to get accurate modification times."""
+    asset_type = str(resource.get("asset_type") or "")
+    if "storage.googleapis.com/bucket" not in asset_type.lower():
+        return resource
+
+    bucket_name = str(resource.get("display_name") or resource.get("name") or "").split("/")[-1]
+    if not bucket_name:
+        return resource
+
+    try:
+        session = AuthorizedSession(credentials)
+        url = f"https://storage.googleapis.com/storage/v1/b/{bucket_name}"
+        response = session.get(url, timeout=10)
+        if response.status_code == 200:
+            bucket_meta = response.json()
+            updated_time = bucket_meta.get("updated") or bucket_meta.get("timeCreated")
+            if updated_time:
+                resource["updated_at"] = _format_timestamp(updated_time)
+    except Exception:
+        pass
+
+    return resource
+
+
+
 def fetch_live_resources(
     credentials: service_account.Credentials,
     scope: str,
@@ -278,6 +304,12 @@ def fetch_live_resources(
             "Could not fetch resources. Check API enablement and IAM permissions. "
             f"Details: {exc}"
         ) from exc
+
+    # Enrich bucket resources with real Cloud Storage metadata for accurate update times
+    resources = [
+        enrich_bucket_metadata(resource, credentials) if "storage.googleapis.com/bucket" in str(resource.get("asset_type") or "").lower() else resource
+        for resource in resources
+    ]
 
     return resources
 
