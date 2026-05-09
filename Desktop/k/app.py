@@ -357,7 +357,15 @@ Upload a service account JSON and fetch your live GCP inventory.
     if st.button("Fetch Live Resources", type="primary"):
         st.session_state.fetch_clicked = True
     
+    if st.button("🔄 Refresh Data", help="Re-fetch all resource metadata to see updated timestamps"):
+        st.session_state.resources = []
+        st.session_state.last_refresh_at = None
+        st.session_state.fetch_clicked = True
+        st.rerun()
+    
     st.divider()
+    
+    st.caption("💡 Tip: After modifying resources in GCP console, click Refresh Data to see updated timestamps.")
     
     st.markdown("### 🚀 Navigation")
     page_key = st.radio(
