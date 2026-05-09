@@ -146,7 +146,7 @@ def estimate_monthly_cost(resource: dict[str, Any]) -> float:
         elif any(size in machine_type for size in ["e2-standard-8", "n2-standard-8", "standard-8"]):
             multiplier *= 5.0
 
-    if resource.get("state") and str(resource.get("state")).upper() not in {"ACTIVE", "RUNNING", "READY", "UP"}:
+    if resource.get("state") and str(resource.get("state")).upper() != "RUNNING":
         multiplier *= 0.35
 
     if str(labels.get("env", "")).lower() in {"prod", "production"}:
@@ -245,32 +245,12 @@ def fetch_live_resources(
 
 
 def filter_likely_running(resources: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Return resources that are actively running (excludes READY state)."""
-    active_states = {"ACTIVE", "RUNNING", "UP"}
-    running_hints = (
-        "compute.googleapis.com/Instance",
-        "container.googleapis.com/Cluster",
-        "container.googleapis.com/NodePool",
-        "run.googleapis.com/Service",
-        "sqladmin.googleapis.com/Instance",
-        "composer.googleapis.com/Environment",
-        "dataproc.googleapis.com/Cluster",
-        "redis.googleapis.com/Instance",
-    )
-
-    filtered: list[dict[str, Any]] = []
-    for resource in resources:
-        state = (resource.get("state") or "").upper()
-        asset_type = resource.get("asset_type") or ""
-
-        if state in active_states:
-            filtered.append(resource)
-            continue
-
-        if any(hint in asset_type for hint in running_hints):
-            filtered.append(resource)
-
-    return filtered
+    """Return only resources whose state is explicitly RUNNING."""
+    return [
+        resource
+        for resource in resources
+        if (resource.get("state") or "").upper() == "RUNNING"
+    ]
 
 
 def filter_resources_by_nl_query(resources: list[dict[str, Any]], prompt: str) -> list[dict[str, Any]]:
@@ -302,7 +282,7 @@ def filter_resources_by_nl_query(resources: list[dict[str, Any]], prompt: str) -
         filtered = sorted(filtered, key=lambda row: float(row.get("estimated_monthly_cost") or 0), reverse=True)
 
     if any(word in text for word in ["unused", "idle"]):
-        filtered = [row for row in filtered if str(row.get("state") or "").upper() not in {"ACTIVE", "RUNNING", "READY", "UP"}]
+        filtered = [row for row in filtered if str(row.get("state") or "").upper() != "RUNNING"]
 
     return filtered
 
