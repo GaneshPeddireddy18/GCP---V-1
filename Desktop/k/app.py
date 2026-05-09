@@ -128,7 +128,8 @@ with st.sidebar:
     
     st.divider()
     
-    st.button("Fetch Live Resources", type="primary", key="sidebar_fetch_btn", on_click=trigger_fetch)
+    if st.button("Fetch Live Resources", type="primary"):
+        st.session_state.fetch_clicked = True
     
     st.divider()
     
@@ -155,10 +156,6 @@ if "fetch_clicked" not in st.session_state:
     st.session_state.fetch_clicked = False
 if "selected_live_resource" not in st.session_state:
     st.session_state.selected_live_resource = None
-
-
-def trigger_fetch() -> None:
-    st.session_state.fetch_clicked = True
 
 def load_resources() -> list[dict[str, object]]:
     with st.spinner("Fetching live resources from GCP..."):
