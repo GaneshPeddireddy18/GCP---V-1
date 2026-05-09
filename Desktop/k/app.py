@@ -470,6 +470,7 @@ else:
             box-shadow: 0 16px 32px rgba(0, 0, 0, 0.2);
             backdrop-filter: blur(12px);
             transition: all 0.3s ease;
+            animation: fadeInScale 0.6s ease-out;
         }
         div[data-testid="stMetric"]:hover {
             border-color: rgba(96, 165, 250, 0.25);
@@ -503,6 +504,86 @@ else:
             border-color: rgba(96, 165, 250, 0.5);
             box-shadow: 0 12px 24px rgba(59, 130, 246, 0.3);
             transform: translateY(-1px);
+        }
+        @keyframes fadeInScale {
+            from {
+                opacity: 0;
+                transform: scale(0.95);
+            }
+            to {
+                opacity: 1;
+                transform: scale(1);
+            }
+        }
+        @keyframes slideInFromLeft {
+            from {
+                opacity: 0;
+                transform: translateX(-12px);
+            }
+            to {
+                opacity: 1;
+                transform: translateX(0);
+            }
+        }
+        @keyframes slideInFromRight {
+            from {
+                opacity: 0;
+                transform: translateX(12px);
+            }
+            to {
+                opacity: 1;
+                transform: translateX(0);
+            }
+        }
+        @keyframes pulseGlow {
+            0%, 100% {
+                box-shadow: 0 12px 32px rgba(0, 0, 0, 0.25), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+            }
+            50% {
+                box-shadow: 0 12px 32px rgba(59, 130, 246, 0.25), inset 0 1px 0 rgba(255, 255, 255, 0.12);
+            }
+        }
+        @keyframes buttonPop {
+            0% {
+                transform: scale(1);
+            }
+            50% {
+                transform: scale(1.05);
+            }
+            100% {
+                transform: scale(1);
+            }
+        }
+        div[data-testid="stMetric"] {
+            background: linear-gradient(135deg, rgba(15, 23, 42, 0.8) 0%, rgba(25, 35, 55, 0.65) 100%);
+            border: 1px solid rgba(96, 165, 250, 0.12);
+            border-radius: 14px;
+            padding: 18px 20px;
+            box-shadow: 0 16px 32px rgba(0, 0, 0, 0.2);
+            backdrop-filter: blur(12px);
+            transition: all 0.3s ease;
+            animation: fadeInScale 0.6s ease-out;
+        }
+        .feature-card {
+            animation: fadeInScale 0.5s ease-out;
+        }
+        .hero-card {
+            animation: fadeInScale 0.7s ease-out;
+        }
+        .section-card {
+            animation: fadeInScale 0.6s ease-out;
+        }
+        [data-testid="stAlert"] {
+            animation: pulseGlow 3s ease-in-out infinite;
+        }
+        .stButton > button {
+            animation: fadeInScale 0.4s ease-out;
+        }
+        .stChatMessage {
+            animation: slideInFromLeft 0.4s ease-out;
+        }
+        .stChatMessage[data-testid*="assistant"] {
+            animation: slideInFromRight 0.4s ease-out;
         }
         </style>
         """,
