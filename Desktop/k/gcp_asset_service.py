@@ -124,6 +124,43 @@ def _classify_asset_type(asset_type: str) -> str:
     return "Other"
 
 
+def _friendly_resource_name(asset_type: str) -> str:
+    lowered = asset_type.lower()
+    if "compute.googleapis.com/instance" in lowered:
+        return "VM Instance"
+    if "compute.googleapis.com/disk" in lowered:
+        return "Persistent Disk"
+    if "compute.googleapis.com/network" in lowered:
+        return "VPC Network"
+    if "compute.googleapis.com/firewall" in lowered:
+        return "Firewall Rule"
+    if "compute.googleapis.com/forwardingrule" in lowered:
+        return "Load Balancer Rule"
+    if "storage.googleapis.com/bucket" in lowered:
+        return "Storage Bucket"
+    if "container.googleapis.com/cluster" in lowered:
+        return "Kubernetes Engine"
+    if "container.googleapis.com/nodepool" in lowered:
+        return "Kubernetes Node Pool"
+    if "sqladmin.googleapis.com/instance" in lowered:
+        return "Database"
+    if "spanner.googleapis.com/instance" in lowered:
+        return "Spanner Database"
+    if "redis.googleapis.com/instance" in lowered:
+        return "Redis Cache"
+    if "run.googleapis.com/service" in lowered:
+        return "Cloud Run Service"
+    if "iam.googleapis.com/serviceaccount" in lowered:
+        return "Service Account"
+    if "iam.googleapis.com/role" in lowered:
+        return "IAM Role"
+    if "cloudkms.googleapis.com/keyring" in lowered:
+        return "KMS Key Ring"
+    if "cloudkms.googleapis.com/cryptokey" in lowered:
+        return "KMS Crypto Key"
+    return "Other Resource"
+
+
 def estimate_monthly_cost(resource: dict[str, Any]) -> float:
     asset_type = resource.get("asset_type") or ""
     base_cost = BASE_MONTHLY_COSTS.get(asset_type, 0.0)
@@ -180,6 +217,7 @@ def extract_owner_hint(resource: dict[str, Any]) -> str:
 def normalize_resource(resource: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(resource)
     normalized["asset_class"] = _classify_asset_type(str(resource.get("asset_type") or ""))
+    normalized["resource_name"] = _friendly_resource_name(str(resource.get("asset_type") or ""))
     normalized["estimated_monthly_cost"] = estimate_monthly_cost(resource)
     normalized["owner_hint"] = extract_owner_hint(resource)
     normalized["created_at"] = _format_timestamp(str(resource.get("create_time") or ""))
@@ -333,6 +371,10 @@ def fetch_monitoring_time_series(
     zone: str,
     metric_type: str,
     seconds: int = 3600,
+    aligner: str | None = None,
+    reducer: str | None = None,
+    group_by_fields: list[str] | None = None,
+    alignment_period_seconds: int = 60,
 ) -> list[dict[str, Any]]:
     session = AuthorizedSession(credentials)
     end_time = datetime.now(timezone.utc)
@@ -349,6 +391,12 @@ def fetch_monitoring_time_series(
         "interval.endTime": end_time.isoformat().replace("+00:00", "Z"),
         "view": "FULL",
     }
+    if aligner:
+        params["aggregation.alignmentPeriod"] = f"{max(60, alignment_period_seconds)}s"
+        params["aggregation.perSeriesAligner"] = aligner
+    if reducer:
+        params["aggregation.crossSeriesReducer"] = reducer
+        params["aggregation.groupByFields"] = group_by_fields or ["resource.label.instance_id"]
     response = session.get(url, params=params, timeout=30)
     if response.status_code >= 400:
         raise GCPDashboardError(
@@ -379,28 +427,5 @@ def flatten_time_series(series: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     "value": numeric,
                 }
             )
-    return rows
-
-
-def flatten_time_series(series: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    for item in series:
-        metric = item.get("metric", {})
-        resource = item.get("resource", {})
-        for point in item.get("points", []):
-            value = point.get("value", {})
-            point_time = point.get("interval", {}).get("endTime") or point.get("interval", {}).get("startTime")
-            numeric = None
-            for key in ("doubleValue", "int64Value"):
-                if key in value:
-                    numeric = value.get(key)
-                    break
-            rows.append(
-                {
-                    "metric": metric.get("type", ""),
-                    "resource": resource.get("labels", {}),
-                    "time": point_time,
-                    "value": numeric,
-                }
-            )
+    rows.sort(key=lambda row: str(row.get("time") or ""))
     return rows

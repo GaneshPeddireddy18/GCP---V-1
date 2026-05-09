@@ -132,6 +132,87 @@ def format_elapsed_time(timestamp: datetime | None) -> str:
     return f"{delta_seconds // 3600}h ago"
 
 
+def build_resource_display_frame(df: pd.DataFrame) -> pd.DataFrame:
+    """Return a stable resource table with owner and timestamp columns."""
+    if df.empty:
+        return df
+
+    table = df.copy()
+    if "display_name" not in table:
+        table["display_name"] = ""
+    if "resource_name" not in table:
+        table["resource_name"] = "Other Resource"
+    if "asset_type" not in table:
+        table["asset_type"] = ""
+    if "location" not in table:
+        table["location"] = ""
+    if "state" not in table:
+        table["state"] = ""
+    if "estimated_monthly_cost" not in table:
+        table["estimated_monthly_cost"] = 0.0
+    if "owner_hint" not in table:
+        table["owner_hint"] = "Unknown"
+    if "updated_at" not in table:
+        table["updated_at"] = ""
+    if "created_at" not in table:
+        table["created_at"] = ""
+    if "monitoring" not in table:
+        table["monitoring"] = "-"
+
+    table["owner_hint"] = table["owner_hint"].fillna("Unknown")
+    table["resource_name"] = table["resource_name"].replace("", pd.NA).fillna("Other Resource")
+    table["updated_at"] = table["updated_at"].replace("", pd.NA).fillna("Not available")
+    table["created_at"] = table["created_at"].replace("", pd.NA).fillna("Not available")
+    table["monitoring"] = table.apply(
+        lambda row: "Show"
+        if str(row.get("asset_type") or "") == "compute.googleapis.com/Instance"
+        and str(row.get("state") or "").upper() == "RUNNING"
+        else "-",
+        axis=1,
+    )
+
+    return table[
+        [
+            "display_name",
+            "resource_name",
+            "asset_type",
+            "location",
+            "state",
+            "monitoring",
+            "estimated_monthly_cost",
+            "owner_hint",
+            "updated_at",
+            "created_at",
+        ]
+    ]
+
+
+def build_metric_chart_frame(points: list[dict[str, object]], aggregate: str = "mean", scale: float = 1.0) -> pd.DataFrame:
+    if not points:
+        return pd.DataFrame()
+
+    metric_frame = pd.DataFrame(points)
+    if metric_frame.empty or "time" not in metric_frame or "value" not in metric_frame:
+        return pd.DataFrame()
+
+    metric_frame["time"] = pd.to_datetime(metric_frame["time"], errors="coerce")
+    metric_frame["value"] = pd.to_numeric(metric_frame["value"], errors="coerce")
+    metric_frame = metric_frame.dropna(subset=["time", "value"])
+    if metric_frame.empty:
+        return pd.DataFrame()
+
+    if aggregate == "sum":
+        grouped = metric_frame.groupby("time", as_index=False)["value"].sum()
+    elif aggregate == "max":
+        grouped = metric_frame.groupby("time", as_index=False)["value"].max()
+    else:
+        grouped = metric_frame.groupby("time", as_index=False)["value"].mean()
+
+    grouped = grouped.sort_values("time")
+    grouped["value"] = grouped["value"] * float(scale)
+    return grouped
+
+
 def build_infrastructure_summary(resources: list[dict[str, object]], health_score: int, cost_summary: dict[str, object], likely_running_count: int) -> list[str]:
     if not resources:
         return [
@@ -258,8 +339,8 @@ Upload a service account JSON and fetch your live GCP inventory.
         value="",
         help="Example: state:RUNNING OR location:us-central1",
     )
-    only_running = st.checkbox("Only show likely running resources", value=False)
-    st.caption("Turn it off to include all resource states.")
+    only_running = True
+    st.caption("RUNNING-only mode: READY, STOPPED, and TERMINATED resources are hidden.")
     max_rows = st.slider("Maximum rows", min_value=100, max_value=10000, value=2000, step=100)
     
     st.divider()
@@ -350,7 +431,7 @@ if auto_refresh_enabled and st.session_state.resources:
         st.session_state.connection_state = "Error"
         st.warning(str(exc))
 
-resources = st.session_state.resources
+resources = filter_likely_running(st.session_state.resources)
 
 df = pd.DataFrame(resources) if resources else pd.DataFrame()
 
@@ -725,7 +806,7 @@ else:
                 )
 
         st.subheader("Live Resource List")
-        st.dataframe(df_filtered, use_container_width=True, hide_index=True)
+        st.dataframe(build_resource_display_frame(df_filtered), use_container_width=True, hide_index=True)
 
         csv_data = df_filtered.to_csv(index=False).encode("utf-8")
         st.download_button(
@@ -771,8 +852,9 @@ else:
             st.line_chart(trend.set_index("create_day"))
 
         st.markdown("#### Highest-cost resources")
+        highest_cost_frame = build_resource_display_frame(df.sort_values("estimated_monthly_cost", ascending=False).head(10))
         st.dataframe(
-            df.sort_values("estimated_monthly_cost", ascending=False)[["display_name", "asset_class", "location", "estimated_monthly_cost", "owner_hint"]].head(10),
+            highest_cost_frame[["display_name", "resource_name", "location", "estimated_monthly_cost", "owner_hint", "updated_at", "created_at"]],
             use_container_width=True,
             hide_index=True,
         )
@@ -811,7 +893,8 @@ else:
         if st.session_state.get("selected_live_resource"):
             selected_cat = st.session_state.selected_live_resource
             types = CATEGORY_MAP.get(selected_cat, [])
-            filtered_df = df[df["asset_type"].isin(types)] if not df.empty else pd.DataFrame()
+            filtered_rows = [row for row in resources if str(row.get("asset_type") or "") in types]
+            filtered_df = pd.DataFrame(filtered_rows) if filtered_rows else pd.DataFrame()
 
             st.divider()
             st.subheader(f"{selected_cat} — {len(filtered_df)} items")
@@ -821,10 +904,104 @@ else:
                 detail_b.metric("Estimated Monthly Cost", f"${filtered_df['estimated_monthly_cost'].sum():.2f}")
                 detail_c.metric("Top Asset Type", filtered_df["asset_type"].mode().iloc[0])
                 st.dataframe(
-                    filtered_df[["display_name", "asset_type", "location", "state", "estimated_monthly_cost", "owner_hint"]],
+                    build_resource_display_frame(filtered_df),
                     use_container_width=True,
                     hide_index=True,
                 )
+
+                monitor_candidates = [
+                    row
+                    for row in filtered_rows
+                    if str(row.get("asset_type") or "") == "compute.googleapis.com/Instance"
+                    and str(row.get("state") or "").upper() == "RUNNING"
+                ]
+                if monitor_candidates:
+                    st.markdown("#### Monitoring")
+                    st.caption("Monitoring column shows Show for running VMs. Select one VM and click Show Monitoring.")
+                    monitor_label_map = {
+                        f"{row.get('display_name') or row.get('name')} ({row.get('location')})": row
+                        for row in monitor_candidates
+                    }
+                    selected_monitor_label = st.selectbox(
+                        "Monitoring target",
+                        list(monitor_label_map.keys()),
+                        key=f"live_monitor_target_{selected_cat}",
+                    )
+                    if st.button("Show Monitoring", key=f"live_show_monitoring_{selected_cat}"):
+                        selected_monitor = monitor_label_map[selected_monitor_label]
+                        selected_info = parse_compute_instance_resource(selected_monitor)
+                        if not selected_info:
+                            st.warning("Could not parse VM identifier for monitoring.")
+                        else:
+                            try:
+                                instance_details = fetch_compute_instance_details(
+                                    credentials,
+                                    selected_info["project"],
+                                    selected_info["zone"],
+                                    selected_info["instance"],
+                                )
+                                instance_id = str(instance_details.get("id", ""))
+                                monitoring_metrics = {
+                                    "CPU Utilization": {
+                                        "metric": "compute.googleapis.com/instance/cpu/utilization",
+                                        "aligner": "ALIGN_MEAN",
+                                        "reducer": "REDUCE_MEAN",
+                                        "aggregate": "mean",
+                                        "scale": 100.0,
+                                    },
+                                    "Memory Utilization": {
+                                        "metric": "agent.googleapis.com/memory/percent_used",
+                                        "aligner": "ALIGN_MEAN",
+                                        "reducer": "REDUCE_MEAN",
+                                        "aggregate": "mean",
+                                        "scale": 1.0,
+                                    },
+                                    "Network Traffic": {
+                                        "metric": "compute.googleapis.com/instance/network/received_bytes_count",
+                                        "aligner": "ALIGN_RATE",
+                                        "reducer": "REDUCE_SUM",
+                                        "aggregate": "sum",
+                                        "scale": 1.0,
+                                    },
+                                    "Disk Space Utilization": {
+                                        "metric": "agent.googleapis.com/disk/percent_used",
+                                        "aligner": "ALIGN_MEAN",
+                                        "reducer": "REDUCE_MEAN",
+                                        "aggregate": "mean",
+                                        "scale": 1.0,
+                                    },
+                                }
+                                graph_columns = st.columns(2)
+                                for index, (title, metric_cfg) in enumerate(monitoring_metrics.items()):
+                                    try:
+                                        series = fetch_monitoring_time_series(
+                                            credentials,
+                                            selected_info["project"],
+                                            instance_id,
+                                            selected_info["zone"],
+                                            metric_cfg["metric"],
+                                            aligner=metric_cfg["aligner"],
+                                            reducer=metric_cfg["reducer"],
+                                            group_by_fields=["resource.label.instance_id"],
+                                        )
+                                        points = flatten_time_series(series)
+                                        with graph_columns[index % 2]:
+                                            st.markdown(f"##### {title}")
+                                            metric_frame = build_metric_chart_frame(
+                                                points,
+                                                aggregate=metric_cfg["aggregate"],
+                                                scale=float(metric_cfg["scale"]),
+                                            )
+                                            if not metric_frame.empty:
+                                                st.line_chart(metric_frame.set_index("time")["value"])
+                                            else:
+                                                st.info("No samples found for this metric.")
+                                    except GCPDashboardError as exc:
+                                        with graph_columns[index % 2]:
+                                            st.warning(str(exc))
+                            except GCPDashboardError as exc:
+                                st.warning(str(exc))
+
                 csv_data = filtered_df.to_csv(index=False).encode("utf-8")
                 st.download_button(f"Download {selected_cat} CSV", data=csv_data, file_name=f"gcp_{selected_cat.lower().replace(' ', '_')}.csv")
             else:
@@ -868,14 +1045,37 @@ else:
                         )
                         instance_id = str(instance_details.get("id", ""))
                         monitoring_metrics = {
-                            "CPU": "compute.googleapis.com/instance/cpu/utilization",
-                            "Network Out": "compute.googleapis.com/instance/network/sent_bytes_count",
-                            "Network In": "compute.googleapis.com/instance/network/received_bytes_count",
-                            "Disk Read": "compute.googleapis.com/instance/disk/read_bytes_count",
-                            "Disk Write": "compute.googleapis.com/instance/disk/write_bytes_count",
+                            "CPU Utilization": {
+                                "metric": "compute.googleapis.com/instance/cpu/utilization",
+                                "aligner": "ALIGN_MEAN",
+                                "reducer": "REDUCE_MEAN",
+                                "aggregate": "mean",
+                                "scale": 100.0,
+                            },
+                            "Memory Utilization": {
+                                "metric": "agent.googleapis.com/memory/percent_used",
+                                "aligner": "ALIGN_MEAN",
+                                "reducer": "REDUCE_MEAN",
+                                "aggregate": "mean",
+                                "scale": 1.0,
+                            },
+                            "Network Traffic": {
+                                "metric": "compute.googleapis.com/instance/network/received_bytes_count",
+                                "aligner": "ALIGN_RATE",
+                                "reducer": "REDUCE_SUM",
+                                "aggregate": "sum",
+                                "scale": 1.0,
+                            },
+                            "Disk Space Utilization": {
+                                "metric": "agent.googleapis.com/disk/percent_used",
+                                "aligner": "ALIGN_MEAN",
+                                "reducer": "REDUCE_MEAN",
+                                "aggregate": "mean",
+                                "scale": 1.0,
+                            },
                         }
                         graph_columns = st.columns(2)
-                        for index, (title, metric_type) in enumerate(monitoring_metrics.items()):
+                        for index, (title, metric_cfg) in enumerate(monitoring_metrics.items()):
                             with st.spinner(f"Loading {title}..."):
                                 try:
                                     series = fetch_monitoring_time_series(
@@ -883,17 +1083,21 @@ else:
                                         selected_info["project"],
                                         instance_id,
                                         selected_info["zone"],
-                                        metric_type,
+                                        metric_cfg["metric"],
+                                        aligner=metric_cfg["aligner"],
+                                        reducer=metric_cfg["reducer"],
+                                        group_by_fields=["resource.label.instance_id"],
                                     )
                                     points = flatten_time_series(series)
                                     target = graph_columns[index % 2]
                                     with target:
                                         st.markdown(f"##### {title}")
-                                        if points:
-                                            metric_frame = pd.DataFrame(points)
-                                            metric_frame["time"] = pd.to_datetime(metric_frame["time"], errors="coerce")
-                                            metric_frame["value"] = pd.to_numeric(metric_frame["value"], errors="coerce")
-                                            metric_frame = metric_frame.dropna(subset=["time", "value"])
+                                        metric_frame = build_metric_chart_frame(
+                                            points,
+                                            aggregate=metric_cfg["aggregate"],
+                                            scale=float(metric_cfg["scale"]),
+                                        )
+                                        if not metric_frame.empty:
                                             st.line_chart(metric_frame.set_index("time")["value"])
                                         else:
                                             st.info("No monitoring samples found for this metric.")
