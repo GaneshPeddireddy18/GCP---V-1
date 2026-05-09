@@ -283,12 +283,32 @@ def fetch_live_resources(
 
 
 def filter_likely_running(resources: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Return only resources whose state is explicitly RUNNING."""
-    return [
-        resource
-        for resource in resources
-        if (resource.get("state") or "").upper() == "RUNNING"
-    ]
+    """Return active resources while keeping stateless assets like buckets visible."""
+    excluded_states = {
+        "READY",
+        "STOPPED",
+        "TERMINATED",
+        "SUSPENDED",
+        "PAUSED",
+        "DELETED",
+    }
+
+    filtered: list[dict[str, Any]] = []
+    for resource in resources:
+        state = (resource.get("state") or "").upper().strip()
+        asset_type = str(resource.get("asset_type") or "")
+
+        if state in excluded_states:
+            continue
+        if state == "RUNNING":
+            filtered.append(resource)
+            continue
+
+        # Keep stateless resources (e.g., buckets, IAM, networks) even when state is empty.
+        if not state and asset_type != "compute.googleapis.com/Instance":
+            filtered.append(resource)
+
+    return filtered
 
 
 def filter_resources_by_nl_query(resources: list[dict[str, Any]], prompt: str) -> list[dict[str, Any]]:
