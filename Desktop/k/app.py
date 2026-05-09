@@ -201,14 +201,18 @@ def build_metric_chart_frame(points: list[dict[str, object]], aggregate: str = "
     if metric_frame.empty:
         return pd.DataFrame()
 
-    if aggregate == "sum":
-        grouped = metric_frame.groupby("time", as_index=False)["value"].sum()
-    elif aggregate == "max":
-        grouped = metric_frame.groupby("time", as_index=False)["value"].max()
-    else:
-        grouped = metric_frame.groupby("time", as_index=False)["value"].mean()
+    # Cloud Monitoring may return several sub-series with slightly different timestamps.
+    # Bucket to 1-minute boundaries before aggregation to avoid zig-zag artifacts.
+    metric_frame["time_bucket"] = metric_frame["time"].dt.floor("min")
 
-    grouped = grouped.sort_values("time")
+    if aggregate == "sum":
+        grouped = metric_frame.groupby("time_bucket", as_index=False)["value"].sum()
+    elif aggregate == "max":
+        grouped = metric_frame.groupby("time_bucket", as_index=False)["value"].max()
+    else:
+        grouped = metric_frame.groupby("time_bucket", as_index=False)["value"].mean()
+
+    grouped = grouped.rename(columns={"time_bucket": "time"}).sort_values("time")
     grouped["value"] = grouped["value"] * float(scale)
     return grouped
 
@@ -955,6 +959,7 @@ else:
                                         "reducer": "REDUCE_MEAN",
                                         "aggregate": "mean",
                                         "scale": 1.0,
+                                        "extra_filter": 'metric.label."state" = "used"',
                                     },
                                     "Network Traffic": {
                                         "metric": "compute.googleapis.com/instance/network/received_bytes_count",
@@ -969,6 +974,7 @@ else:
                                         "reducer": "REDUCE_MEAN",
                                         "aggregate": "mean",
                                         "scale": 1.0,
+                                        "extra_filter": None,
                                     },
                                 }
                                 graph_columns = st.columns(2)
@@ -1058,6 +1064,7 @@ else:
                                 "reducer": "REDUCE_MEAN",
                                 "aggregate": "mean",
                                 "scale": 1.0,
+                                "extra_filter": 'metric.label."state" = "used"',
                             },
                             "Network Traffic": {
                                 "metric": "compute.googleapis.com/instance/network/received_bytes_count",
@@ -1072,6 +1079,7 @@ else:
                                 "reducer": "REDUCE_MEAN",
                                 "aggregate": "mean",
                                 "scale": 1.0,
+                                "extra_filter": None,
                             },
                         }
                         graph_columns = st.columns(2)
@@ -1087,6 +1095,7 @@ else:
                                         aligner=metric_cfg["aligner"],
                                         reducer=metric_cfg["reducer"],
                                         group_by_fields=["resource.label.instance_id"],
+                                        extra_filter=metric_cfg.get("extra_filter"),
                                     )
                                     points = flatten_time_series(series)
                                     target = graph_columns[index % 2]

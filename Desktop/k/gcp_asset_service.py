@@ -375,6 +375,7 @@ def fetch_monitoring_time_series(
     reducer: str | None = None,
     group_by_fields: list[str] | None = None,
     alignment_period_seconds: int = 60,
+    extra_filter: str | None = None,
 ) -> list[dict[str, Any]]:
     session = AuthorizedSession(credentials)
     end_time = datetime.now(timezone.utc)
@@ -384,6 +385,8 @@ def fetch_monitoring_time_series(
         f'AND resource.label."instance_id" = "{instance_id}" '
         f'AND resource.label."zone" = "{zone}"'
     )
+    if extra_filter:
+        filter_text = f"{filter_text} AND {extra_filter}"
     url = f"https://monitoring.googleapis.com/v3/projects/{project}/timeSeries"
     params = {
         "filter": filter_text,
