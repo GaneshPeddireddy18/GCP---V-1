@@ -32,6 +32,51 @@ CATEGORY_MAP: dict[str, list[str]] = {
     "IAM": ["iam.googleapis.com/ServiceAccount", "iam.googleapis.com/ServiceAccountKey", "iam.googleapis.com/Role"],
 }
 
+NAVIGATION_PAGES: dict[str, str] = {
+    "overview": "📊 Overview",
+    "cost": "💰 Cost Analytics",
+    "live": "🖥️ Live Resources",
+    "monitoring": "📈 Monitoring",
+    "assistant": "🤖 AI Assistant",
+}
+
+CATEGORY_DESCRIPTIONS: dict[str, str] = {
+    "Compute": "Virtual machines, disks, and forwarding rules that power workloads and traffic entry points.",
+    "Databases": "Managed database services for structured application data and transactions.",
+    "Networking": "VPCs, firewalls, and load balancers that control connectivity and exposure.",
+    "Storage": "Cloud buckets that store files, backups, and application assets.",
+    "Kubernetes": "GKE clusters and node pools for container orchestration and scaling.",
+    "Security": "KMS resources used for encryption keys and protection controls.",
+    "Billing": "Budgets and cost guardrails that help track spend and alerts.",
+    "IAM": "Service accounts, keys, and roles that define access and permissions.",
+}
+
+SERVICE_EXPLANATIONS: dict[str, str] = {
+    "Compute": "Virtual machines used to run applications and workloads in GCP.",
+    "Databases": "Managed relational databases that reduce administration overhead.",
+    "Networking": "Connectivity controls such as VPCs, firewalls, and load balancers.",
+    "Storage": "Object storage for files, backups, and application data.",
+    "Kubernetes": "Container orchestration for deploying and scaling services.",
+    "Security": "Encryption and key management resources that protect data.",
+    "Billing": "Budget resources that monitor and control cloud spend.",
+    "IAM": "Identity and access resources that govern permissions.",
+}
+
+DID_YOU_KNOW_TIPS = [
+    "Public buckets are one of the most common cloud security risks.",
+    "Stopped VMs can still keep attached disks billed.",
+    "Auto-scaling helps reduce compute costs during quiet periods.",
+    "Unused static IPs may continue to generate charges.",
+    "Lifecycle rules in Cloud Storage can reduce long-term spend.",
+]
+
+AI_QUICK_PROMPTS = [
+    "Show expensive services",
+    "Find idle resources",
+    "Check security risks",
+    "Analyze compute usage",
+]
+
 
 @st.cache_data(show_spinner=False)
 def build_dashboard_context(resources: list[dict[str, object]]) -> dict[str, object]:
@@ -85,6 +130,87 @@ def format_elapsed_time(timestamp: datetime | None) -> str:
     if delta_seconds < 3600:
         return f"{delta_seconds // 60}m ago"
     return f"{delta_seconds // 3600}h ago"
+
+
+def build_infrastructure_summary(resources: list[dict[str, object]], health_score: int, cost_summary: dict[str, object], likely_running_count: int) -> list[str]:
+    if not resources:
+        return [
+            "No live resources loaded yet.",
+            "Upload a service account JSON and fetch inventory to see live guidance.",
+        ]
+
+    active_text = f"{likely_running_count} active resources detected."
+    cost_text = f"Estimated daily spend: ${float(cost_summary.get('daily_spending', 0.0)):.2f}."
+    health_text = (
+        "Healthy infrastructure overall."
+        if health_score >= 80
+        else "Infrastructure is stable, but a few items need attention."
+        if health_score >= 60
+        else "Several risks or unknowns need review."
+    )
+    region_count = len({str(row.get('location') or 'Global') for row in resources})
+    region_text = f"Resources are distributed across {region_count} region(s)."
+    return [active_text, cost_text, health_text, region_text]
+
+
+def build_cost_insights(df: pd.DataFrame) -> list[str]:
+    if df.empty:
+        return ["Cost insights will appear after inventory is loaded."]
+
+    insights: list[str] = []
+    by_service = df.groupby("asset_class", as_index=False)["estimated_monthly_cost"].sum().sort_values("estimated_monthly_cost", ascending=False)
+    if not by_service.empty:
+        top_service_row = by_service.iloc[0]
+        total_cost = float(df["estimated_monthly_cost"].sum()) or 1.0
+        share = round((float(top_service_row["estimated_monthly_cost"]) / total_cost) * 100, 1)
+        insights.append(f"{top_service_row['asset_class']} contributes {share}% of estimated cost.")
+
+    top_resource = df.sort_values("estimated_monthly_cost", ascending=False).head(1)
+    if not top_resource.empty:
+        row = top_resource.iloc[0]
+        insights.append(f"Highest-cost resource: {row.get('display_name') or row.get('name')} at ${float(row.get('estimated_monthly_cost') or 0):.2f}/mo.")
+
+    if (df["asset_type"] == "compute.googleapis.com/ForwardingRule").any():
+        insights.append("Unused public IP or load balancer resources may add unnecessary networking spend.")
+
+    return insights[:3]
+
+
+def build_security_recommendations(df: pd.DataFrame) -> list[tuple[str, str]]:
+    if df.empty:
+        return [("Low", "Security recommendations will appear after inventory is loaded.")]
+
+    recommendations: list[tuple[str, str]] = []
+    unknown_owner_count = int(df["owner_hint"].eq("Unknown").sum()) if "owner_hint" in df else 0
+    if unknown_owner_count:
+        recommendations.append(("Medium", f"{unknown_owner_count} resources do not have a clear owner tag."))
+
+    if (df["asset_type"] == "compute.googleapis.com/Firewall").any():
+        recommendations.append(("High", "Review firewall rules for overly broad ingress access."))
+
+    if df["asset_type"].isin(["iam.googleapis.com/ServiceAccountKey", "iam.googleapis.com/Role"]).any():
+        recommendations.append(("Medium", "Check service account keys and IAM roles for broad permissions."))
+
+    idle_count = int((~df["state"].isin(["ACTIVE", "RUNNING", "READY", "UP"])).sum()) if "state" in df else 0
+    if idle_count:
+        recommendations.append(("Low", f"{idle_count} resources appear idle or stopped and should be reviewed."))
+
+    return recommendations[:3] or [("Low", "No obvious security issues were detected from the current inventory.")]
+
+
+def build_performance_guidance(df: pd.DataFrame) -> list[str]:
+    if df.empty:
+        return ["Performance guidance appears after inventory loads."]
+
+    guidance = [
+        "Low CPU usage usually means VMs can be right-sized.",
+        "Autoscaling helps absorb spikes without overprovisioning.",
+    ]
+    if (df["asset_type"] == "storage.googleapis.com/Bucket").any():
+        guidance.append("Storage lifecycle rules can reduce long-term bucket costs.")
+    if (df["asset_type"] == "compute.googleapis.com/Instance").any():
+        guidance.append("Stopped VMs still keep disks billed until they are cleaned up.")
+    return guidance[:3]
 
 
 st.set_page_config(page_title="GCP Live Resource Dashboard", page_icon="☁", layout="wide")
@@ -149,15 +275,15 @@ Upload a service account JSON and fetch your live GCP inventory.
     st.divider()
     
     st.markdown("### 🚀 Navigation")
-    page_selected = st.radio(
+    page_key = st.radio(
         "Select Page",
-        ["📊 Overview", "💰 Cost Analytics", "🖥️ Live Resources", "📈 Monitoring", "🤖 AI Assistant"],
+        list(NAVIGATION_PAGES.keys()),
         index=0,
-        label_visibility="collapsed"
+        format_func=lambda key: NAVIGATION_PAGES[key],
+        key="nav_page",
+        label_visibility="collapsed",
     )
-    
-    # Clean up selection
-    page_selected = page_selected.split(" ", 1)[-1] if " " in page_selected else page_selected
+    page_selected = page_key
 
 if "resources" not in st.session_state:
     st.session_state.resources = []
@@ -436,13 +562,24 @@ else:
 
     st.caption("Live data refreshes on demand and powers the summary views below.")
     
+    summary_lines = build_infrastructure_summary(resources, health_score, cost_summary, likely_running_count)
+    cost_insights = build_cost_insights(df_filtered)
+    security_recommendations = build_security_recommendations(df_filtered)
+    performance_guidance = build_performance_guidance(df_filtered)
+
+    summary_cards = st.columns(4)
+    summary_cards[0].markdown(f'<div class="feature-card"><strong>Today\'s summary</strong><span>{summary_lines[0]} {summary_lines[1]}</span></div>', unsafe_allow_html=True)
+    summary_cards[1].markdown(f'<div class="feature-card"><strong>Cloud health</strong><span>{summary_lines[2]}</span></div>', unsafe_allow_html=True)
+    summary_cards[2].markdown(f'<div class="feature-card"><strong>Cost insight</strong><span>{cost_insights[0] if cost_insights else "Cost insights will appear after inventory is loaded."}</span></div>', unsafe_allow_html=True)
+    summary_cards[3].markdown(f'<div class="feature-card"><strong>Security focus</strong><span>{security_recommendations[0][1]}</span></div>', unsafe_allow_html=True)
+
     sec_col1, sec_col2 = st.columns([2, 1])
     with sec_col1:
         st.markdown('<div class="section-card"><h3>📊 Infrastructure Overview</h3><p style="margin:0;color:#cbd5e1;font-size:0.95rem;">Real-time snapshot of your core GCP services.</p></div>', unsafe_allow_html=True)
     with sec_col2:
         st.markdown(f'<div class="feature-card"><strong>🔐 Security Score</strong><span>{health_score}/100 • {"Excellent" if health_score >= 80 else "Good" if health_score >= 60 else "Fair"}</span></div>', unsafe_allow_html=True)
 
-    selected_type = page_selected.split(" ", 1)[-1] if " " in page_selected else page_selected
+    selected_type = page_selected
     
     # Add activity feed as a collapsible section
     with st.expander("📋 Recent Activity & Events", expanded=False):
@@ -463,8 +600,17 @@ else:
             st.markdown(f'<div style="padding:12px;border-left:2px solid rgba(96,165,250,0.3);margin-bottom:8px;"><div style="font-weight:600;color:#f1f5f9;">{icon_event}</div><div style="font-size:0.85rem;color:#cbd5e1;">{description}</div></div>', unsafe_allow_html=True)
 
     # OVERVIEW PAGE
-    if selected_type == "Overview":
+    if selected_type == "overview":
         st.subheader("Overview")
+        st.markdown(
+            '<div class="section-card"><h3>Today\'s Infrastructure Summary</h3><p style="margin:0;color:#cbd5e1;">This view explains what the inventory means so new users can understand the cloud picture faster.</p></div>',
+            unsafe_allow_html=True,
+        )
+        overview_tip = DID_YOU_KNOW_TIPS[datetime.now(timezone.utc).day % len(DID_YOU_KNOW_TIPS)]
+        overview_info_a, overview_info_b, overview_info_c = st.columns(3)
+        overview_info_a.markdown(f'<div class="feature-card"><strong>Inventory health</strong><span>{summary_lines[2]}</span></div>', unsafe_allow_html=True)
+        overview_info_b.markdown(f'<div class="feature-card"><strong>Daily spend</strong><span>{summary_lines[1]}</span></div>', unsafe_allow_html=True)
+        overview_info_c.markdown(f'<div class="feature-card"><strong>Did you know?</strong><span>{overview_tip}</span></div>', unsafe_allow_html=True)
         overview_col1, overview_col2, overview_col3 = st.columns(3)
         overview_col1.metric("Unique Projects", unique_projects)
         overview_col2.metric("Likely Running", likely_running_count)
@@ -509,9 +655,15 @@ else:
         )
 
     # COST ANALYTICS PAGE
-    elif selected_type == "Cost Analytics":
+    elif selected_type == "cost":
         st.subheader("Cost Analytics")
-        st.caption("Estimated spend based on live inventory.")
+        st.markdown(
+            '<div class="section-card"><h3>Cost insights</h3><p style="margin:0;color:#cbd5e1;">These notes explain where spend comes from and what to review first.</p></div>',
+            unsafe_allow_html=True,
+        )
+        cost_tip_a, cost_tip_b = st.columns(2)
+        cost_tip_a.markdown(f'<div class="feature-card"><strong>Primary cost driver</strong><span>{cost_insights[0] if cost_insights else "Cost insights will appear after inventory is loaded."}</span></div>', unsafe_allow_html=True)
+        cost_tip_b.markdown(f'<div class="feature-card"><strong>Optimization guidance</strong><span>{performance_guidance[0]}</span></div>', unsafe_allow_html=True)
 
         service_costs = df.groupby("asset_class", as_index=False)["estimated_monthly_cost"].sum().sort_values("estimated_monthly_cost", ascending=False)
         location_costs = df.groupby("location", as_index=False)["estimated_monthly_cost"].sum().sort_values("estimated_monthly_cost", ascending=False)
@@ -545,8 +697,12 @@ else:
         )
 
     # LIVE RESOURCES PAGE
-    elif selected_type == "Live Resources":
+    elif selected_type == "live":
         st.subheader("Live Resources")
+        st.markdown(
+            '<div class="section-card"><h3>Service guide</h3><p style="margin:0;color:#cbd5e1;">Hover the category buttons for a simple explanation of each service group. This helps beginners understand what they are looking at.</p></div>',
+            unsafe_allow_html=True,
+        )
         st.caption("Choose a category to inspect matching resources.")
 
         summary_cols = st.columns(4)
@@ -556,7 +712,7 @@ else:
             count = int(df[df["asset_type"].isin(asset_list)].shape[0]) if not df.empty else 0
             category_cost = float(df[df["asset_type"].isin(asset_list)]["estimated_monthly_cost"].sum()) if not df.empty else 0.0
             summary_cols[idx].markdown(
-                f'<div class="feature-card"><strong>{cat_label}</strong><span>{count} items · ${category_cost:.2f}/mo</span></div>',
+                f'<div class="feature-card"><strong>{cat_label}</strong><span>{CATEGORY_DESCRIPTIONS.get(cat_label, "") } {count} items · ${category_cost:.2f}/mo</span></div>',
                 unsafe_allow_html=True,
             )
 
@@ -566,7 +722,7 @@ else:
 
             col = cols[idx % 2]
             label = f"{cat_label} ({count})"
-            if col.button(label, use_container_width=True, key=f"cat_btn_{idx}"):
+            if col.button(label, use_container_width=True, key=f"cat_btn_{idx}", help=CATEGORY_DESCRIPTIONS.get(cat_label, "")):
                 st.session_state.selected_live_resource = cat_label
                 st.rerun()
 
@@ -600,22 +756,28 @@ else:
                 st.rerun()
 
     # MONITORING PAGE
-    elif selected_type == "Monitoring":
+    elif selected_type == "monitoring":
         st.subheader("Monitoring")
+        st.markdown(
+            '<div class="section-card"><h3>Monitoring guide</h3><p style="margin:0;color:#cbd5e1;">Live telemetry helps you see whether a VM is healthy, overloaded, or underused.</p></div>',
+            unsafe_allow_html=True,
+        )
         st.caption("Live VM metrics when Cloud Monitoring is available.")
+        st.info("Monitoring APIs connected. Refresh metrics below to inspect CPU, network, and disk activity.")
         compute_candidates = [row for row in resources if str(row.get("asset_type") or "") == "compute.googleapis.com/Instance"]
         if not compute_candidates:
             st.info("No Compute Engine instances found in the current result set.")
         else:
             label_map = {f"{row.get('display_name') or row.get('name')} ({row.get('location')})": row for row in compute_candidates}
-            selected_label = st.selectbox("Choose a VM", list(label_map.keys()))
+            selected_label = st.selectbox("Choose a VM", list(label_map.keys()), help="Pick a Compute Engine VM to inspect live telemetry.")
             selected = label_map[selected_label]
             selected_info = parse_compute_instance_resource(selected)
 
             if not selected_info:
                 st.warning("Could not parse the VM identifier for monitoring.")
             else:
-                if st.button("Load Monitoring Metrics"):
+                if st.button("Load Monitoring Metrics", help="Refresh live CPU, network, and disk metrics for the selected VM."):
+                    st.success("Live telemetry is active for the selected VM.")
                     try:
                         instance_details = fetch_compute_instance_details(
                             credentials,
@@ -661,15 +823,28 @@ else:
                         st.warning(str(exc))
 
     # AI ASSISTANT PAGE
-    elif selected_type == "AI Assistant":
+    elif selected_type == "assistant":
         st.subheader("AI Assistant")
+        st.markdown(
+            '<div class="section-card"><h3>AI recommendation starter</h3><p style="margin:0;color:#cbd5e1;">Use a quick prompt below or ask your own question. The assistant explains costs, risks, and optimization ideas in simple language.</p></div>',
+            unsafe_allow_html=True,
+        )
         st.caption("Ask for cost ideas, risky resources, or cleanup suggestions.")
+        if "ai_prompt_seed" not in st.session_state:
+            st.session_state.ai_prompt_seed = ""
+        ai_prompt_cols = st.columns(2)
+        for idx, suggestion in enumerate(AI_QUICK_PROMPTS):
+            if ai_prompt_cols[idx % 2].button(suggestion, key=f"ai_quick_{idx}", help="Use this as a starter prompt"):
+                st.session_state.ai_prompt_seed = suggestion
 
         for message in st.session_state.assistant_messages:
             with st.chat_message(message["role"]):
                 st.write(message["content"])
 
         prompt = st.chat_input("Ask the cloud assistant")
+        if not prompt and st.session_state.ai_prompt_seed:
+            prompt = st.session_state.ai_prompt_seed
+            st.session_state.ai_prompt_seed = ""
         if prompt:
             expensive = df.sort_values("estimated_monthly_cost", ascending=False).head(5)
             expensive_text = ", ".join(
@@ -704,3 +879,13 @@ else:
             st.session_state.assistant_messages.append({"role": "user", "content": prompt})
             st.session_state.assistant_messages.append({"role": "assistant", "content": answer})
             st.rerun()
+
+    footer_left, footer_right = st.columns([1.6, 1])
+    footer_left.markdown(
+        f'<div class="section-card"><h3>System status</h3><p style="margin:0;color:#cbd5e1;">API Status: Operational · Last Sync: {format_elapsed_time(st.session_state.last_refresh_at)} · Connected Services: {len(df_filtered)} · Dashboard Version: v2.1</p></div>',
+        unsafe_allow_html=True,
+    )
+    footer_right.markdown(
+        f'<div class="section-card"><h3>Operational note</h3><p style="margin:0;color:#cbd5e1;">{summary_lines[3] if len(summary_lines) > 3 else "Resource visibility updates automatically when refresh is enabled."}</p></div>',
+        unsafe_allow_html=True,
+    )
