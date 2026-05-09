@@ -72,19 +72,18 @@ def build_dashboard_context(resources: list[dict[str, object]]) -> dict[str, obj
 st.set_page_config(page_title="GCP Live Resource Dashboard", page_icon="☁", layout="wide")
 
 st.title("GCP Live Resource Dashboard")
-st.caption("Upload a service account JSON key to view live resources from Cloud Asset Inventory.")
+st.caption("Fast live GCP inventory, cost signals, and action views in one place.")
 
 with st.sidebar:
     st.header("Configuration")
     st.markdown(
         """
-1. Enable **Cloud Asset API** in target GCP project.
-2. Grant role **Cloud Asset Viewer** (or broader read role) to service account.
-3. Upload service account JSON key below.
-4. Click **Fetch Live Resources**.
+1. Upload a service account JSON.
+2. Click **Fetch Live Resources**.
+3. Review the live dashboard.
         """
     )
-    st.info("Security: Uploaded key is used in memory only and not written to disk.")
+    st.info("The key stays in memory only.")
     
     uploaded_file = st.file_uploader("Upload service account JSON", type=["json"])
     
@@ -118,7 +117,7 @@ with st.sidebar:
         help="Example: state:RUNNING OR location:us-central1",
     )
     only_running = st.checkbox("Only show likely running resources", value=False)
-    st.caption("Keep this off to see buckets, storage, networking, and other non-running resources.")
+    st.caption("Turn it off to include all resource states.")
     max_rows = st.slider("Maximum rows", min_value=100, max_value=10000, value=2000, step=100)
     
     st.divider()
@@ -292,18 +291,18 @@ else:
     st.markdown(
         """
         <div class="hero-card">
-            <div class="hero-badge">Simple live inventory for the 8 core GCP categories</div>
-            <h2>One dashboard to see what is running, what it costs, and where to act first</h2>
-            <p style="margin:0;color:#cbd5e1;line-height:1.6;">Use the sidebar to fetch live resources from your service account. The dashboard only counts Compute, Databases, Networking, Storage, Kubernetes, Security, Billing, and IAM.</p>
+            <div class="hero-badge">Focused live view</div>
+            <h2>See your core GCP services at a glance</h2>
+            <p style="margin:0;color:#cbd5e1;line-height:1.6;">This dashboard keeps only the categories you asked for: Compute, Databases, Networking, Storage, Kubernetes, Security, Billing, and IAM.</p>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
     hero_a, hero_b, hero_c = st.columns(3)
-    hero_a.markdown('<div class="feature-card"><strong>1. Fetch live inventory</strong><span>Upload a service account JSON and pull Cloud Asset Inventory in one click.</span></div>', unsafe_allow_html=True)
-    hero_b.markdown('<div class="feature-card"><strong>2. See only core services</strong><span>Overview and Live Resources are filtered to the categories you asked for.</span></div>', unsafe_allow_html=True)
-    hero_c.markdown('<div class="feature-card"><strong>3. Take action faster</strong><span>Use cost analytics, monitoring, and the AI assistant to spot waste.</span></div>', unsafe_allow_html=True)
+    hero_a.markdown('<div class="feature-card"><strong>Live inventory</strong><span>Fetch resources from Cloud Asset Inventory in one click.</span></div>', unsafe_allow_html=True)
+    hero_b.markdown('<div class="feature-card"><strong>Clean scope</strong><span>Only the services you care about are counted and shown.</span></div>', unsafe_allow_html=True)
+    hero_c.markdown('<div class="feature-card"><strong>Faster decisions</strong><span>Use cost, monitoring, and assistant views to act quickly.</span></div>', unsafe_allow_html=True)
 
     metrics_col1, metrics_col2, metrics_col3, metrics_col4 = st.columns(4)
     metrics_col1.metric("Total Resources", len(df_filtered))
@@ -311,7 +310,7 @@ else:
     metrics_col3.metric("Estimated Monthly Cost", f"${cost_summary['estimated_monthly_cost']:.2f}")
     metrics_col4.metric("Estimated Daily Spend", f"${cost_summary['daily_spending']:.2f}")
 
-    st.caption("Resources are refreshed from Cloud Asset Inventory on demand, then analyzed locally for cost, search, and recommendations.")
+    st.caption("Live data refreshes on demand and powers the summary views below.")
 
     selected_type = page_selected
 
@@ -323,7 +322,7 @@ else:
         overview_col2.metric("Likely Running", likely_running_count)
         overview_col3.metric("Top Service", top_service)
 
-        st.markdown('<div class="section-card"><h3>Category Snapshot</h3><p style="margin:0;color:#cbd5e1;">This view only includes the categories you requested.</p></div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-card"><h3>Category Snapshot</h3><p style="margin:0;color:#cbd5e1;">A quick read on the eight tracked categories.</p></div>', unsafe_allow_html=True)
         if not category_summary_df.empty:
             chart_col, table_col = st.columns([1.3, 1])
             with chart_col:
@@ -363,20 +362,20 @@ else:
 
     # COST ANALYTICS PAGE
     elif selected_type == "Cost Analytics":
-        st.subheader("Cloud Cost Analytics")
-        st.caption("This is an estimated view built from live inventory. For exact billing, connect Cloud Billing export later.")
+        st.subheader("Cost Analytics")
+        st.caption("Estimated spend based on live inventory.")
 
         service_costs = df.groupby("asset_class", as_index=False)["estimated_monthly_cost"].sum().sort_values("estimated_monthly_cost", ascending=False)
         location_costs = df.groupby("location", as_index=False)["estimated_monthly_cost"].sum().sort_values("estimated_monthly_cost", ascending=False)
 
         pie_left, pie_right = st.columns(2)
         with pie_left:
-            st.markdown("#### Service-wise spending")
+            st.markdown("#### Spend by service")
             if not service_costs.empty:
                 fig = px.pie(service_costs, names="asset_class", values="estimated_monthly_cost", hole=0.42)
                 st.plotly_chart(fig, use_container_width=True)
         with pie_right:
-            st.markdown("#### Location-wise spending")
+            st.markdown("#### Spend by location")
             if not location_costs.empty:
                 fig = px.bar(location_costs.head(10), x="location", y="estimated_monthly_cost")
                 st.plotly_chart(fig, use_container_width=True)
@@ -387,10 +386,10 @@ else:
         if not trend_frame.empty:
             trend_frame["create_day"] = trend_frame["created_at_dt"].dt.date
             trend = trend_frame.groupby("create_day", as_index=False)["estimated_monthly_cost"].sum()
-            st.markdown("#### Estimated cost trend by resource creation date")
+            st.markdown("#### Cost trend by creation date")
             st.line_chart(trend.set_index("create_day"))
 
-        st.markdown("#### Most expensive resources")
+        st.markdown("#### Highest-cost resources")
         st.dataframe(
             df.sort_values("estimated_monthly_cost", ascending=False)[["display_name", "asset_class", "location", "estimated_monthly_cost", "owner_hint"]].head(10),
             use_container_width=True,
@@ -399,8 +398,8 @@ else:
 
     # LIVE RESOURCES PAGE
     elif selected_type == "Live Resources":
-        st.subheader("📊 Live Resources")
-        st.caption("Click a category to view the matching resources in your account")
+        st.subheader("Live Resources")
+        st.caption("Choose a category to inspect matching resources.")
 
         cols = st.columns(2)
         for idx, (cat_label, asset_list) in enumerate(CATEGORY_MAP.items()):
@@ -421,7 +420,7 @@ else:
             filtered_df = df[df["asset_type"].isin(types)] if not df.empty else pd.DataFrame()
 
             st.divider()
-            st.subheader(f"{selected_cat} — {len(filtered_df)} resources")
+            st.subheader(f"{selected_cat} — {len(filtered_df)} items")
             st.metric("Count", len(filtered_df))
             if not filtered_df.empty:
                 st.metric("Estimated Monthly Cost", f"${filtered_df['estimated_monthly_cost'].sum():.2f}")
@@ -429,7 +428,7 @@ else:
                 csv_data = filtered_df.to_csv(index=False).encode("utf-8")
                 st.download_button(f"Download {selected_cat} CSV", data=csv_data, file_name=f"gcp_{selected_cat.lower().replace(' ', '_')}.csv")
             else:
-                st.info("No resources found for this category.")
+                st.info("No items found in this category.")
 
             if st.button("← Back to Live Resources"):
                 st.session_state.selected_live_resource = None
@@ -437,8 +436,8 @@ else:
 
     # MONITORING PAGE
     elif selected_type == "Monitoring":
-        st.subheader("Real-Time Monitoring")
-        st.caption("This panel loads live CPU, network, and disk graphs for Compute Engine instances when Cloud Monitoring API is available.")
+        st.subheader("Monitoring")
+        st.caption("Live VM metrics when Cloud Monitoring is available.")
         compute_candidates = [row for row in resources if str(row.get("asset_type") or "") == "compute.googleapis.com/Instance"]
         if not compute_candidates:
             st.info("No Compute Engine instances found in the current result set.")
@@ -449,7 +448,7 @@ else:
             selected_info = parse_compute_instance_resource(selected)
 
             if not selected_info:
-                st.warning("Could not parse the VM resource name into project/zone/instance. Monitoring graphs are skipped.")
+                st.warning("Could not parse the VM identifier for monitoring.")
             else:
                 if st.button("Load Monitoring Metrics"):
                     try:
@@ -461,9 +460,9 @@ else:
                         )
                         instance_id = str(instance_details.get("id", ""))
                         monitoring_metrics = {
-                            "CPU Utilization": "compute.googleapis.com/instance/cpu/utilization",
-                            "Network Sent": "compute.googleapis.com/instance/network/sent_bytes_count",
-                            "Network Received": "compute.googleapis.com/instance/network/received_bytes_count",
+                            "CPU": "compute.googleapis.com/instance/cpu/utilization",
+                            "Network Out": "compute.googleapis.com/instance/network/sent_bytes_count",
+                            "Network In": "compute.googleapis.com/instance/network/received_bytes_count",
                             "Disk Read": "compute.googleapis.com/instance/disk/read_bytes_count",
                             "Disk Write": "compute.googleapis.com/instance/disk/write_bytes_count",
                         }
@@ -498,8 +497,8 @@ else:
 
     # AI ASSISTANT PAGE
     elif selected_type == "AI Assistant":
-        st.subheader("AI Cloud Assistant")
-        st.caption("Ask about expensive resources, risky services, unused items, or how to reduce cost. This assistant uses live dashboard data and rule-based recommendations.")
+        st.subheader("AI Assistant")
+        st.caption("Ask for cost ideas, risky resources, or cleanup suggestions.")
 
         for message in st.session_state.assistant_messages:
             with st.chat_message(message["role"]):
@@ -533,7 +532,7 @@ else:
             elif any(term in prompt_lower for term in ["reduce cost", "optimize", "save money"]):
                 answer = "Cost optimization ideas: " + " ".join(recommendations[:4])
             else:
-                answer = "I can summarize expensive resources, recommend cost optimizations, find idle items, and help search by region or service."
+                answer = "I can summarize spend, suggest cost savings, find idle items, and help you search by service or region."
                 if recommendations:
                     answer += " Current recommendations: " + " ".join(recommendations[:3])
 
