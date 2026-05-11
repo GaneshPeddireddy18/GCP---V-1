@@ -15,7 +15,12 @@ class AWSServiceError(Exception):
     pass
 
 
-def assume_role_session(role_arn: str, external_id: str | None = None, session_name: str = "cloud-dashboard-session") -> tuple[Any, str]:
+def assume_role_session(
+    role_arn: str,
+    external_id: str | None = None,
+    session_name: str = "cloud-dashboard-session",
+    profile_name: str | None = None,
+) -> tuple[Any, str]:
     """Assume an IAM role using the default AWS credential chain.
 
     The dashboard does not require access keys in the UI. It relies on the
@@ -27,7 +32,7 @@ def assume_role_session(role_arn: str, external_id: str | None = None, session_n
         raise AWSServiceError("Enter an IAM role ARN.")
 
     try:
-        base_session = boto3.Session()
+        base_session = boto3.Session(profile_name=profile_name) if profile_name and profile_name.strip() else boto3.Session()
         sts_client = base_session.client("sts", region_name="us-east-1")
 
         assume_kwargs: dict[str, str] = {

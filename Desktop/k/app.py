@@ -390,6 +390,9 @@ st.caption("Fast live inventory from GCP & AWS, cost signals, and action views i
 
 credentials = None
 aws_session = None
+aws_role_arn = ""
+aws_profile_name = ""
+aws_external_id = ""
 default_project_id = None
 service_account_email = None
 account_alias = None
@@ -471,15 +474,27 @@ Provide an IAM role ARN to fetch your live AWS inventory.
             placeholder="arn:aws:iam::123456789012:role/ReadOnlyDashboardRole",
             help="This role must trust the AWS identity running the dashboard and allow sts:AssumeRole.",
         )
+        aws_profile_name = st.text_input(
+            "AWS Profile Name (optional)",
+            placeholder="default",
+            help="Use this if your local machine has an AWS CLI profile configured. Leave blank on EC2 instance profile.",
+        )
         aws_external_id = st.text_input(
             "External ID (optional)",
             placeholder="Only if your role trust policy requires it",
             help="Leave blank unless your role requires an ExternalId.",
         )
 
-        if aws_role_arn.strip():
+        if not aws_role_arn.strip():
+            st.warning("Enter an AWS IAM Role ARN to proceed.")
+
+        if st.button("Validate AWS Role", type="secondary", disabled=not aws_role_arn.strip()):
             try:
-                aws_session, account_id = assume_role_session(aws_role_arn, external_id=aws_external_id)
+                aws_session, account_id = assume_role_session(
+                    aws_role_arn,
+                    external_id=aws_external_id,
+                    profile_name=aws_profile_name,
+                )
                 account_info = get_aws_account_info(aws_session)
                 account_alias = account_info.get("account_alias", account_id)
 
@@ -489,8 +504,6 @@ Provide an IAM role ARN to fetch your live AWS inventory.
             except AWSServiceError as exc:
                 st.error(str(exc))
                 aws_session = None
-        else:
-            st.warning("Enter an AWS IAM Role ARN to proceed.")
         
         query = st.text_input(
             "Optional resource name filter",
@@ -498,7 +511,7 @@ Provide an IAM role ARN to fetch your live AWS inventory.
             help="Filter resources by name (case-insensitive)",
         )
         only_running = True
-        st.caption("RUNNING-only mode: Filters for running/active resources only. Role ARN is used with the machine's AWS identity, not dashboard secrets.")
+        st.caption("RUNNING-only mode: Filters for running/active resources only. The dashboard uses the machine's AWS identity or AWS profile to assume the ARN, not dashboard keys.")
 
     st.markdown("### 🚀 Navigation")
     page_key = st.radio(
@@ -586,9 +599,17 @@ def load_resources() -> list[dict[str, object]]:
             )
     else:  # AWS
         if aws_session is None:
-            raise AWSServiceError("Enter AWS credentials before fetching live resources.")
+            if not aws_role_arn.strip():
+                raise AWSServiceError("Enter an AWS IAM Role ARN before fetching live resources.")
+            aws_session_local, _ = assume_role_session(
+                aws_role_arn,
+                external_id=aws_external_id,
+                profile_name=aws_profile_name,
+            )
+        else:
+            aws_session_local = aws_session
         with st.spinner("Fetching live resources from AWS..."):
-            resources = fetch_all_resources(aws_session)
+            resources = fetch_all_resources(aws_session_local)
             
             # Apply query filter if provided (filter by name)
             if query.strip():
