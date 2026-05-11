@@ -389,10 +389,6 @@ st.title("AI-Powered Multi-Cloud Infrastructure Intelligence Platform")
 st.caption("Fast live inventory from GCP & AWS, cost signals, and action views in one place.")
 
 credentials = None
-aws_session = None
-aws_role_arn = ""
-aws_profile_name = ""
-aws_external_id = ""
 default_project_id = None
 service_account_email = None
 account_alias = None
@@ -469,42 +465,72 @@ Provide an IAM role ARN to fetch your live AWS inventory.
         )
         st.info("No access keys in the dashboard. It uses the AWS credentials available on the machine to assume the role ARN you provide.")
 
-        aws_role_arn = st.text_input(
-            "AWS IAM Role ARN",
-            placeholder="arn:aws:iam::123456789012:role/ReadOnlyDashboardRole",
-            help="This role must trust the AWS identity running the dashboard and allow sts:AssumeRole.",
-        )
-        aws_profile_name = st.text_input(
-            "AWS Profile Name (optional)",
-            placeholder="default",
-            help="Use this if your local machine has an AWS CLI profile configured. Leave blank on EC2 instance profile.",
-        )
-        aws_external_id = st.text_input(
-            "External ID (optional)",
-            placeholder="Only if your role trust policy requires it",
-            help="Leave blank unless your role requires an ExternalId.",
-        )
+        if "aws_session" not in st.session_state:
+            st.session_state.aws_session = None
+        if "aws_role_arn" not in st.session_state:
+            st.session_state.aws_role_arn = ""
+        if "aws_profile_name" not in st.session_state:
+            st.session_state.aws_profile_name = ""
+        if "aws_external_id" not in st.session_state:
+            st.session_state.aws_external_id = ""
+        if "aws_account_id" not in st.session_state:
+            st.session_state.aws_account_id = ""
+        if "aws_account_alias" not in st.session_state:
+            st.session_state.aws_account_alias = ""
 
-        if not aws_role_arn.strip():
-            st.warning("Enter an AWS IAM Role ARN to proceed.")
+        with st.form("aws_role_form", clear_on_submit=False):
+            aws_role_arn_input = st.text_input(
+                "AWS IAM Role ARN",
+                value=st.session_state.aws_role_arn,
+                placeholder="arn:aws:iam::123456789012:role/ReadOnlyDashboardRole",
+                help="This role must trust the AWS identity running the dashboard and allow sts:AssumeRole.",
+            )
+            aws_profile_name_input = st.text_input(
+                "AWS Profile Name (optional)",
+                value=st.session_state.aws_profile_name,
+                placeholder="default",
+                help="Use this if your local machine has an AWS CLI profile configured. Leave blank on EC2 instance profile.",
+            )
+            aws_external_id_input = st.text_input(
+                "External ID (optional)",
+                value=st.session_state.aws_external_id,
+                placeholder="Only if your role trust policy requires it",
+                help="Leave blank unless your role requires an ExternalId.",
+            )
+            aws_submit = st.form_submit_button("Get Data", type="primary")
 
-        if st.button("Validate AWS Role", type="secondary", disabled=not aws_role_arn.strip()):
-            try:
-                aws_session, account_id = assume_role_session(
-                    aws_role_arn,
-                    external_id=aws_external_id,
-                    profile_name=aws_profile_name,
-                )
-                account_info = get_aws_account_info(aws_session)
-                account_alias = account_info.get("account_alias", account_id)
+        if aws_submit:
+            st.session_state.aws_role_arn = aws_role_arn_input.strip()
+            st.session_state.aws_profile_name = aws_profile_name_input.strip()
+            st.session_state.aws_external_id = aws_external_id_input.strip()
 
-                st.success("AWS role assumed successfully.")
-                st.metric("Account ID", account_id)
-                st.metric("Account Alias", account_alias)
-            except AWSServiceError as exc:
-                st.error(str(exc))
-                aws_session = None
-        
+            if not st.session_state.aws_role_arn:
+                st.error("Enter an AWS IAM Role ARN.")
+                st.session_state.aws_session = None
+            else:
+                try:
+                    aws_session_result, account_id = assume_role_session(
+                        st.session_state.aws_role_arn,
+                        external_id=st.session_state.aws_external_id,
+                        profile_name=st.session_state.aws_profile_name,
+                    )
+                    account_info = get_aws_account_info(aws_session_result)
+                    st.session_state.aws_session = aws_session_result
+                    st.session_state.aws_account_id = account_id
+                    st.session_state.aws_account_alias = account_info.get("account_alias", account_id)
+                    st.success("AWS role assumed successfully.")
+                except AWSServiceError as exc:
+                    st.session_state.aws_session = None
+                    st.session_state.aws_account_id = ""
+                    st.session_state.aws_account_alias = ""
+                    st.error(str(exc))
+
+        if st.session_state.aws_account_id:
+            st.metric("Account ID", st.session_state.aws_account_id)
+            st.metric("Account Alias", st.session_state.aws_account_alias or st.session_state.aws_account_id)
+        elif not st.session_state.aws_role_arn:
+            st.warning("Enter an AWS IAM Role ARN and click Get Data, or press Enter inside the form.")
+
         query = st.text_input(
             "Optional resource name filter",
             value="",
@@ -526,7 +552,7 @@ Provide an IAM role ARN to fetch your live AWS inventory.
     
     st.divider()
     
-    if (cloud_provider == "GCP" and credentials) or (cloud_provider == "AWS" and aws_session):
+    if (cloud_provider == "GCP" and credentials) or (cloud_provider == "AWS" and st.session_state.get("aws_session") is not None):
         max_rows = st.slider("Maximum rows", min_value=100, max_value=10000, value=2000, step=100)
 
         st.divider()
@@ -598,16 +624,15 @@ def load_resources() -> list[dict[str, object]]:
                 limit=max_rows,
             )
     else:  # AWS
-        if aws_session is None:
-            if not aws_role_arn.strip():
+        aws_session_local = st.session_state.get("aws_session")
+        if aws_session_local is None:
+            if not st.session_state.get("aws_role_arn", "").strip():
                 raise AWSServiceError("Enter an AWS IAM Role ARN before fetching live resources.")
             aws_session_local, _ = assume_role_session(
-                aws_role_arn,
-                external_id=aws_external_id,
-                profile_name=aws_profile_name,
+                st.session_state.get("aws_role_arn", ""),
+                external_id=st.session_state.get("aws_external_id", ""),
+                profile_name=st.session_state.get("aws_profile_name", ""),
             )
-        else:
-            aws_session_local = aws_session
         with st.spinner("Fetching live resources from AWS..."):
             resources = fetch_all_resources(aws_session_local)
             
