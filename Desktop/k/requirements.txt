@@ -1,4 +1,6 @@
 streamlit==1.44.1
 pandas==2.2.3
+plotly==5.24.0
 google-auth==2.39.0
 google-cloud-asset==3.30.0
+streamlit-autorefresh==0.0.5

@@ -16,9 +16,11 @@ from gcp_asset_service import (
     filter_resources_by_nl_query,
     flatten_time_series,
     load_credentials_from_json,
+    get_iam_user_info,
     parse_compute_instance_resource,
     summarize_costs,
 )
+from cache_manager import CacheManager, MetadataCache
 
 
 CATEGORY_MAP: dict[str, list[str]] = {
@@ -36,7 +38,9 @@ NAVIGATION_PAGES: dict[str, str] = {
     "overview": "📊 Overview",
     "cost": "💰 Cost Analytics",
     "live": "🖥️ Live Resources",
+    "clockpluse": "🕒 ClockPlus",
     "monitoring": "📈 Monitoring",
+    "iam_audit": "🔐 IAM Audit Log",
     "assistant": "🤖 AI Assistant",
 }
 
@@ -150,8 +154,14 @@ def build_resource_display_frame(df: pd.DataFrame) -> pd.DataFrame:
         table["state"] = ""
     if "estimated_monthly_cost" not in table:
         table["estimated_monthly_cost"] = 0.0
+    if "usage_status" not in table:
+        table["usage_status"] = "Unknown"
+    if "attachment_target" not in table:
+        table["attachment_target"] = "Unattached"
     if "owner_hint" not in table:
         table["owner_hint"] = "Unknown"
+    if "created_by_iam_user" not in table:
+        table["created_by_iam_user"] = "Unknown"
     if "updated_at" not in table:
         table["updated_at"] = ""
     if "created_at" not in table:
@@ -160,6 +170,9 @@ def build_resource_display_frame(df: pd.DataFrame) -> pd.DataFrame:
         table["monitoring"] = "-"
 
     table["owner_hint"] = table["owner_hint"].fillna("Unknown")
+    table["usage_status"] = table["usage_status"].fillna("Unknown")
+    table["attachment_target"] = table["attachment_target"].fillna("Unattached")
+    table["created_by_iam_user"] = table["created_by_iam_user"].fillna("Unknown")
     table["resource_name"] = table["resource_name"].replace("", pd.NA).fillna("Other Resource")
     table["updated_at"] = table["updated_at"].replace("", pd.NA).fillna("Not available")
     table["created_at"] = table["created_at"].replace("", pd.NA).fillna("Not available")
@@ -180,11 +193,77 @@ def build_resource_display_frame(df: pd.DataFrame) -> pd.DataFrame:
             "state",
             "monitoring",
             "estimated_monthly_cost",
+            "usage_status",
+            "attachment_target",
             "owner_hint",
+            "created_by_iam_user",
             "updated_at",
             "created_at",
         ]
     ]
+
+
+def build_clockplus_frame(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+
+    tracked_types = {
+        "compute.googleapis.com/Snapshot",
+        "compute.googleapis.com/Disk",
+        "compute.googleapis.com/Address",
+    }
+    frame = df[df["asset_type"].isin(tracked_types)].copy()
+    if frame.empty:
+        return frame
+
+    for column in ["display_name", "resource_name", "asset_type", "location", "estimated_monthly_cost", "usage_status", "created_by_iam_user", "created_at", "updated_at"]:
+        if column not in frame:
+            frame[column] = "" if column not in {"estimated_monthly_cost"} else 0.0
+
+    frame["clockplus_status"] = frame["usage_status"].replace({"Unknown": "Not connected"})
+    return frame[
+        [
+            "display_name",
+            "resource_name",
+            "asset_type",
+            "location",
+            "clockplus_status",
+            "attachment_target",
+            "estimated_monthly_cost",
+            "created_by_iam_user",
+            "created_at",
+            "updated_at",
+        ]
+    ]
+
+
+def build_clockplus_summary(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty or "asset_type" not in df or "usage_status" not in df:
+        return pd.DataFrame()
+
+    rows = []
+    type_labels = {
+        "compute.googleapis.com/Snapshot": "Snapshots",
+        "compute.googleapis.com/Disk": "Persistent Disks",
+        "compute.googleapis.com/Address": "Static External IPs",
+    }
+    for asset_type, label in type_labels.items():
+        subset = df[df["asset_type"] == asset_type]
+        if subset.empty:
+            continue
+        connected = int((subset["usage_status"] == "Connected").sum())
+        not_connected = int((subset["usage_status"] == "Not connected").sum())
+        rows.append(
+            {
+                "resource_group": label,
+                "total": len(subset),
+                "connected": connected,
+                "not_connected": not_connected,
+                "estimated_monthly_cost": float(subset["estimated_monthly_cost"].sum()),
+            }
+        )
+
+    return pd.DataFrame(rows)
 
 
 def build_metric_chart_frame(points: list[dict[str, object]], aggregate: str = "mean", scale: float = 1.0) -> pd.DataFrame:
@@ -303,6 +382,19 @@ st.set_page_config(page_title="GCP Live Resource Dashboard", page_icon="☁", la
 st.title("AI-Powered Cloud Infrastructure Intelligence Platform")
 st.caption("Fast live GCP inventory, cost signals, and action views in one place.")
 
+credentials = None
+default_project_id = None
+service_account_email = None
+uploaded_file = None
+file_text = None
+scope = "projects/YOUR_PROJECT_ID"
+query = ""
+only_running = True
+max_rows = 2000
+auto_refresh_enabled = False
+refresh_seconds = 10
+page_selected = "overview"
+
 with st.sidebar:
     st.header("Configuration")
     st.markdown(
@@ -311,68 +403,6 @@ Upload a service account JSON and fetch your live GCP inventory.
         """
     )
     st.info("Secure session: key stays in memory only.")
-    
-    uploaded_file = st.file_uploader("Upload service account JSON", type=["json"])
-    
-    if not uploaded_file:
-        st.stop()
-
-    try:
-        file_text = uploaded_file.getvalue().decode("utf-8")
-        credentials, default_project_id, service_account_email = load_credentials_from_json(file_text)
-    except UnicodeDecodeError:
-        st.error("File is not valid UTF-8 JSON.")
-        st.stop()
-    except GCPDashboardError as exc:
-        st.error(str(exc))
-        st.stop()
-
-    st.success("Service account key loaded successfully.")
-    st.metric("Service Account", service_account_email or "Unknown")
-    st.metric("Default Project", default_project_id or "Unknown")
-
-    default_scope = f"projects/{default_project_id}" if default_project_id else "projects/YOUR_PROJECT_ID"
-    scope = st.text_input(
-        "Scope",
-        value=default_scope,
-        help="Use projects/<id>, folders/<id>, or organizations/<id>",
-    )
-
-    query = st.text_input(
-        "Optional query filter",
-        value="",
-        help="Example: state:RUNNING OR location:us-central1",
-    )
-    only_running = True
-    st.caption("RUNNING-only mode: READY, STOPPED, and TERMINATED resources are hidden.")
-    max_rows = st.slider("Maximum rows", min_value=100, max_value=10000, value=2000, step=100)
-    
-    st.divider()
-    
-    auto_refresh_enabled = st.checkbox("Auto refresh live data", value=True)
-    refresh_seconds = st.selectbox("Refresh interval", [5, 10, 15, 30, 60], index=1)
-    
-    st.divider()
-    
-    if st.button("Fetch Live Resources", type="primary"):
-        st.session_state.fetch_clicked = True
-    
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button("🔄 Refresh Data", help="Re-fetch all resource metadata to see updated timestamps"):
-            st.session_state.resources = []
-            st.session_state.last_refresh_at = None
-            st.session_state.fetch_clicked = True
-            st.rerun()
-    with col2:
-        if st.button("⚡ Quick Refresh", help="Instantly refresh timestamps for object changes"):
-            st.session_state.fetch_clicked = True
-            st.rerun()
-    
-    st.divider()
-    
-    st.caption("💡 Live updates: Auto-refresh checks every 5-60 seconds. Click Quick Refresh for instant updates after object changes.")
-    
     st.markdown("### 🚀 Navigation")
     page_key = st.radio(
         "Select Page",
@@ -384,8 +414,74 @@ Upload a service account JSON and fetch your live GCP inventory.
     )
     page_selected = page_key
 
+    uploaded_file = st.file_uploader("Upload service account JSON", type=["json"])
+
+    if uploaded_file:
+        try:
+            file_text = uploaded_file.getvalue().decode("utf-8")
+            credentials, default_project_id, service_account_email = load_credentials_from_json(file_text)
+        except UnicodeDecodeError:
+            st.error("File is not valid UTF-8 JSON.")
+        except GCPDashboardError as exc:
+            st.error(str(exc))
+        else:
+            st.success("Service account key loaded successfully.")
+
+            # Display IAM user information
+            iam_user_info = get_iam_user_info(credentials)
+            st.info(f"🔐 **IAM User:** {iam_user_info['email']}\n\n**Type:** {iam_user_info['user_type']}")
+
+            st.metric("Service Account", service_account_email or "Unknown")
+            st.metric("Default Project", default_project_id or "Unknown")
+
+            default_scope = f"projects/{default_project_id}" if default_project_id else "projects/YOUR_PROJECT_ID"
+            scope = st.text_input(
+                "Scope",
+                value=default_scope,
+                help="Use projects/<id>, folders/<id>, or organizations/<id>",
+            )
+
+            query = st.text_input(
+                "Optional query filter",
+                value="",
+                help="Example: state:RUNNING OR location:us-central1",
+            )
+            only_running = True
+            st.caption("RUNNING-only mode: READY, STOPPED, and TERMINATED resources are hidden.")
+            max_rows = st.slider("Maximum rows", min_value=100, max_value=10000, value=2000, step=100)
+
+            st.divider()
+
+            auto_refresh_enabled = st.checkbox("Auto refresh live data", value=False)
+            refresh_seconds = st.selectbox("Refresh interval (lower = more network usage)", [30, 60, 120, 300], index=1)
+
+            st.divider()
+
+            if st.button("Fetch Live Resources", type="primary"):
+                st.session_state.fetch_clicked = True
+
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button("🔄 Refresh Data", help="Re-fetch all resource metadata to see updated timestamps"):
+                    st.session_state.resources = []
+                    st.session_state.last_refresh_at = None
+                    st.session_state.fetch_clicked = True
+                    st.rerun()
+            with col2:
+                if st.button("⚡ Quick Refresh", help="Instantly refresh timestamps for object changes"):
+                    st.session_state.fetch_clicked = True
+                    st.rerun()
+
+            st.divider()
+
+            st.caption("💡 Live updates: Auto-refresh interval can be adjusted. Smart caching reduces network usage. Click Quick Refresh for instant updates after object changes.")
+    else:
+        st.warning("Upload a service account JSON to unlock live resource fetching and monitoring.")
+
 if "resources" not in st.session_state:
     st.session_state.resources = []
+if "raw_resources" not in st.session_state:
+    st.session_state.raw_resources = []
 if "assistant_messages" not in st.session_state:
     st.session_state.assistant_messages = [
         {
@@ -403,8 +499,14 @@ if "last_refresh_at" not in st.session_state:
     st.session_state.last_refresh_at = None
 if "connection_state" not in st.session_state:
     st.session_state.connection_state = "Disconnected"
+if "cache_manager" not in st.session_state:
+    st.session_state.cache_manager = CacheManager(ttl_seconds=600)  # 10-minute cache
+if "metadata_cache" not in st.session_state:
+    st.session_state.metadata_cache = MetadataCache()
 
 def load_resources() -> list[dict[str, object]]:
+    if credentials is None:
+        raise GCPDashboardError("Upload a service account JSON before fetching live resources.")
     with st.spinner("Fetching live resources from GCP..."):
         resources = fetch_live_resources(
             credentials=credentials,
@@ -412,9 +514,6 @@ def load_resources() -> list[dict[str, object]]:
             query=query,
             limit=max_rows,
         )
-
-    if only_running:
-        resources = filter_likely_running(resources)
 
     return resources
 
@@ -434,26 +533,30 @@ if st.session_state.get("fetch_clicked"):
         st.session_state.fetch_clicked = False
         st.stop()
 
-    st.session_state.resources = resources
+    st.session_state.raw_resources = resources
+    st.session_state.resources = filter_likely_running(resources)
     st.session_state.fetch_clicked = False
     st.session_state.connection_state = "Connected"
     st.session_state.last_refresh_at = datetime.now(timezone.utc)
 
-if auto_refresh_enabled and st.session_state.resources:
+if auto_refresh_enabled and st.session_state.raw_resources:
     st_autorefresh(interval=refresh_seconds * 1000, key="gcp_live_refresh")
     try:
-        st.session_state.resources = load_resources()
+        st.session_state.raw_resources = load_resources()
+        st.session_state.resources = filter_likely_running(st.session_state.raw_resources)
         st.session_state.connection_state = "Connected"
         st.session_state.last_refresh_at = datetime.now(timezone.utc)
     except GCPDashboardError as exc:
         st.session_state.connection_state = "Error"
         st.warning(str(exc))
 
-resources = filter_likely_running(st.session_state.resources)
+selected_type = page_selected
+
+resources = filter_likely_running(st.session_state.raw_resources)
 
 df = pd.DataFrame(resources) if resources else pd.DataFrame()
 
-if not resources:
+if not resources and selected_type != "clockpluse":
     st.info("Upload a service account JSON and click 'Fetch Live Resources' in the sidebar to begin.")
 else:
     st.markdown(
@@ -1033,6 +1136,77 @@ else:
                 st.session_state.selected_live_resource = None
                 st.rerun()
 
+    # CLOCKPLUS PAGE
+    elif selected_type == "clockpluse":
+        st.subheader("ClockPlus")
+        st.markdown(
+            '<div class="section-card"><h3>Orphaned cost guardrail</h3><p style="margin:0;color:#cbd5e1;">Track snapshots, persistent disks, and static external IPs, then see whether each one is connected or not connected.</p></div>',
+            unsafe_allow_html=True,
+        )
+
+        tracked_types = {
+            "compute.googleapis.com/Snapshot": "Snapshots",
+            "compute.googleapis.com/Disk": "Persistent Disks",
+            "compute.googleapis.com/Address": "Static External IPs",
+        }
+        raw_df = pd.DataFrame(st.session_state.raw_resources) if st.session_state.raw_resources else pd.DataFrame()
+        clockplus_df = raw_df[raw_df["asset_type"].isin(tracked_types.keys())].copy() if not raw_df.empty else pd.DataFrame()
+        connected_count = int((clockplus_df["usage_status"] == "Connected").sum()) if not clockplus_df.empty and "usage_status" in clockplus_df else 0
+        not_connected_count = int((clockplus_df["usage_status"] == "Not connected").sum()) if not clockplus_df.empty and "usage_status" in clockplus_df else 0
+        total_clockplus_cost = float(clockplus_df["estimated_monthly_cost"].sum()) if not clockplus_df.empty else 0.0
+        clockplus_summary_df = build_clockplus_summary(clockplus_df)
+
+        metric_a, metric_b, metric_c, metric_d = st.columns(4)
+        metric_a.metric("Tracked Resources", len(clockplus_df))
+        metric_b.metric("Connected", connected_count)
+        metric_c.metric("Not Connected", not_connected_count)
+        metric_d.metric("Estimated Monthly Cost", f"${total_clockplus_cost:.2f}")
+
+        st.caption("Connected means attached to a VM or service. Snapshots are standalone, so they always appear as not applicable for VM attachment.")
+
+        if clockplus_df.empty:
+            st.info("No snapshots, persistent disks, or static external IPs were found in the current inventory.")
+        else:
+            st.markdown("#### Resource type summary")
+            if clockplus_summary_df.empty:
+                st.info("No ClockPlus resources were found.")
+            else:
+                st.dataframe(clockplus_summary_df, use_container_width=True, hide_index=True)
+
+            type_tabs = st.tabs(["All", "Snapshots", "Persistent Disks", "Static External IPs"])
+            tab_frames = {
+                "All": build_clockplus_frame(clockplus_df),
+                "Snapshots": build_clockplus_frame(clockplus_df[clockplus_df["asset_type"] == "compute.googleapis.com/Snapshot"]),
+                "Persistent Disks": build_clockplus_frame(clockplus_df[clockplus_df["asset_type"] == "compute.googleapis.com/Disk"]),
+                "Static External IPs": build_clockplus_frame(clockplus_df[clockplus_df["asset_type"] == "compute.googleapis.com/Address"]),
+            }
+
+            for tab, label in zip(type_tabs, tab_frames.keys()):
+                with tab:
+                    frame = tab_frames[label]
+                    if frame.empty:
+                        st.info(f"No {label.lower()} found.")
+                    else:
+                        connected_here = int((frame["clockplus_status"] == "Connected").sum())
+                        not_connected_here = int((frame["clockplus_status"] == "Not connected").sum())
+                        stat_a, stat_b, stat_c = st.columns(3)
+                        stat_a.metric("Total", len(frame))
+                        stat_b.metric("Connected", connected_here)
+                        stat_c.metric("Not Connected", not_connected_here)
+                        st.markdown("##### Attachment targets")
+                        st.dataframe(
+                            frame.sort_values(["clockplus_status", "estimated_monthly_cost"], ascending=[True, False]),
+                            use_container_width=True,
+                            hide_index=True,
+                        )
+                        csv_data = frame.to_csv(index=False).encode("utf-8")
+                        st.download_button(
+                            f"Download {label} CSV",
+                            data=csv_data,
+                            file_name=f"clockplus_{label.lower().replace(' ', '_')}.csv",
+                            mime="text/csv",
+                        )
+
     # MONITORING PAGE
     elif selected_type == "monitoring":
         st.subheader("Monitoring")
@@ -1187,6 +1361,91 @@ else:
             st.session_state.assistant_messages.append({"role": "user", "content": prompt})
             st.session_state.assistant_messages.append({"role": "assistant", "content": answer})
             st.rerun()
+
+    # IAM AUDIT LOG PAGE
+    elif selected_type == "iam_audit":
+        st.subheader("🔐 IAM Audit Log - Resource Creator Tracking")
+        st.markdown(
+            '<div class="section-card"><h3>Track who created what</h3><p style="margin:0;color:#cbd5e1;">View the IAM users/service accounts that created each resource. This helps track resource ownership and maintain audit trails.</p></div>',
+            unsafe_allow_html=True,
+        )
+        
+        # Display current IAM user
+        iam_user_info = get_iam_user_info(credentials)
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Current IAM User", iam_user_info["email"])
+        col2.metric("User Type", iam_user_info["user_type"])
+        col3.metric("Authenticated", iam_user_info["timestamp"][:10])
+        
+        st.divider()
+        
+        # Show resources grouped by IAM user
+        st.markdown("#### Resources by Creator")
+        
+        if not df_filtered.empty and "created_by_iam_user" in df_filtered.columns:
+            df_with_creator = df_filtered.copy()
+            
+            # Group by IAM user
+            creator_stats = df_with_creator.groupby("created_by_iam_user", as_index=False).agg({
+                "display_name": "count",
+                "estimated_monthly_cost": "sum",
+            }).rename(columns={
+                "display_name": "Resource Count",
+                "estimated_monthly_cost": "Total Monthly Cost"
+            })
+            
+            st.dataframe(creator_stats.sort_values("Resource Count", ascending=False), use_container_width=True, hide_index=True)
+            
+            st.divider()
+            
+            # Detailed view
+            st.markdown("#### Detailed Resource List by Creator")
+            
+            unique_creators = sorted(df_with_creator["created_by_iam_user"].unique())
+            selected_creator = st.selectbox(
+                "Select IAM user to view their resources",
+                unique_creators,
+                help="View all resources created by this IAM user"
+            )
+            
+            if selected_creator:
+                creator_resources = df_with_creator[df_with_creator["created_by_iam_user"] == selected_creator]
+                st.info(f"👤 **{selected_creator}** created **{len(creator_resources)}** resources totaling **${creator_resources['estimated_monthly_cost'].sum():.2f}**/month")
+                
+                display_cols = ["display_name", "resource_name", "asset_type", "location", "state", "estimated_monthly_cost", "created_at", "owner_hint"]
+                available_cols = [col for col in display_cols if col in creator_resources.columns]
+                
+                st.dataframe(
+                    creator_resources[available_cols].sort_values("estimated_monthly_cost", ascending=False),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+                
+                # Download audit data
+                csv_data = creator_resources[available_cols].to_csv(index=False).encode("utf-8")
+                st.download_button(
+                    f"Download {selected_creator.split('@')[0]} resources",
+                    data=csv_data,
+                    file_name=f"iam_audit_{selected_creator.split('@')[0]}.csv",
+                    mime="text/csv",
+                )
+        else:
+            st.info("No resource creation audit data available yet. Fetch resources to see creator information.")
+        
+        # Audit log file view
+        st.markdown("#### Audit Log Entries")
+        try:
+            import json
+            audit_file = "iam_resource_audit.jsonl"
+            with open(audit_file, "r") as f:
+                audit_entries = [json.loads(line) for line in f if line.strip()]
+                if audit_entries:
+                    audit_df = pd.DataFrame(audit_entries[-50:])  # Last 50 entries
+                    st.dataframe(audit_df.sort_values("timestamp", ascending=False), use_container_width=True, hide_index=True)
+                else:
+                    st.info("No audit log entries found yet.")
+        except FileNotFoundError:
+            st.info("Audit log file not yet created. Resources will be logged when they are created or fetched.")
 
     footer_left, footer_right = st.columns([1.6, 1])
     footer_left.markdown(

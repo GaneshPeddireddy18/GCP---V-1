@@ -77,6 +77,38 @@ def load_credentials_from_json(json_text: str) -> tuple[service_account.Credenti
     return credentials, info.get("project_id"), info.get("client_email")
 
 
+def get_iam_user_info(credentials: service_account.Credentials) -> dict[str, str]:
+    """Extract IAM user/service account information from credentials."""
+    iam_user = getattr(credentials, 'service_account_email', 'Unknown')
+    if hasattr(credentials, '_service_account_email'):
+        iam_user = credentials._service_account_email
+    return {
+        "email": str(iam_user),
+        "user_type": "Service Account" if "@iam.gserviceaccount.com" in str(iam_user) else "User",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def log_resource_creation(resource: dict[str, Any], iam_user: str, project_id: str) -> None:
+    """Create an audit log entry for resource creation."""
+    log_file = "iam_resource_audit.jsonl"
+    audit_entry = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "iam_user": iam_user,
+        "project_id": project_id,
+        "resource_name": str(resource.get("display_name") or resource.get("name") or "Unknown"),
+        "resource_type": str(resource.get("asset_type") or "Unknown"),
+        "resource_location": str(resource.get("location") or "Unknown"),
+        "resource_created_at": str(resource.get("create_time") or "Unknown"),
+        "estimated_cost": float(resource.get("estimated_monthly_cost") or 0),
+    }
+    try:
+        with open(log_file, "a") as f:
+            f.write(json.dumps(audit_entry) + "\n")
+    except Exception as e:
+        print(f"Warning: Could not write audit log: {e}")
+
+
 def _to_dict(value: Any) -> dict[str, Any]:
     if not value:
         return {}
@@ -109,6 +141,8 @@ def _classify_asset_type(asset_type: str) -> str:
     lowered = asset_type.lower()
     if "compute.googleapis.com/instance" in lowered:
         return "Compute Engine"
+    if "compute.googleapis.com/snapshot" in lowered:
+        return "Snapshot"
     if "sqladmin.googleapis.com/instance" in lowered:
         return "Cloud SQL"
     if "container.googleapis.com/cluster" in lowered or "container.googleapis.com/nodepool" in lowered:
@@ -130,6 +164,10 @@ def _friendly_resource_name(asset_type: str) -> str:
         return "VM Instance"
     if "compute.googleapis.com/disk" in lowered:
         return "Persistent Disk"
+    if "compute.googleapis.com/snapshot" in lowered:
+        return "Disk Snapshot"
+    if "compute.googleapis.com/address" in lowered:
+        return "Static External IP"
     if "compute.googleapis.com/network" in lowered:
         return "VPC Network"
     if "compute.googleapis.com/firewall" in lowered:
@@ -183,6 +221,28 @@ def estimate_monthly_cost(resource: dict[str, Any]) -> float:
         elif any(size in machine_type for size in ["e2-standard-8", "n2-standard-8", "standard-8"]):
             multiplier *= 5.0
 
+    if asset_type == "compute.googleapis.com/Snapshot":
+        storage_gb = 0.0
+        for key in ("disk_size_gb", "storage_bytes", "storage_gb"):
+            raw_value = additional.get(key) or labels.get(key)
+            if raw_value is None:
+                continue
+            try:
+                storage_gb = float(raw_value)
+                if key == "storage_bytes":
+                    storage_gb = storage_gb / (1024 ** 3)
+                break
+            except (TypeError, ValueError):
+                continue
+        return round(max(storage_gb, 10.0) * 0.026, 2)
+
+    if asset_type == "compute.googleapis.com/Address":
+        address_type = str(additional.get("address_type") or labels.get("address_type") or "").upper()
+        if address_type == "EXTERNAL":
+            if resource.get("state") and str(resource.get("state")).upper() != "IN_USE":
+                return 7.0
+            return 0.0
+
     if resource.get("state") and str(resource.get("state")).upper() != "RUNNING":
         multiplier *= 0.35
 
@@ -214,12 +274,80 @@ def extract_owner_hint(resource: dict[str, Any]) -> str:
     return "Unknown"
 
 
-def normalize_resource(resource: dict[str, Any]) -> dict[str, Any]:
+def extract_usage_status(resource: dict[str, Any]) -> str:
+    asset_type = str(resource.get("asset_type") or "").lower()
+    state = str(resource.get("state") or "").upper().strip()
+    additional = _to_dict(resource.get("additional_attributes"))
+
+    if "compute.googleapis.com/snapshot" in asset_type:
+        return "Not connected"
+
+    if "compute.googleapis.com/disk" in asset_type:
+        users = additional.get("users") or resource.get("users")
+        if isinstance(users, list) and users:
+            return "Connected"
+        if isinstance(users, str) and users.strip():
+            return "Connected"
+        if state in {"READY", "IN_USE"}:
+            return "Connected"
+        return "Not connected"
+
+    if "compute.googleapis.com/address" in asset_type:
+        users = additional.get("users") or resource.get("users")
+        if isinstance(users, list) and users:
+            return "Connected"
+        if isinstance(users, str) and users.strip():
+            return "Connected"
+        if state == "IN_USE":
+            return "Connected"
+        return "Not connected"
+
+    return "Unknown"
+
+
+def extract_attachment_target(resource: dict[str, Any]) -> str:
+    asset_type = str(resource.get("asset_type") or "").lower()
+    additional = _to_dict(resource.get("additional_attributes"))
+    users = additional.get("users") or resource.get("users") or []
+
+    if "compute.googleapis.com/snapshot" in asset_type:
+        return "Not applicable"
+
+    if isinstance(users, str):
+        users = [users]
+
+    if not isinstance(users, list) or not users:
+        return "Unattached"
+
+    targets: list[str] = []
+    for user in users:
+        text = str(user).strip()
+        if not text:
+            continue
+        parts = [part for part in text.split("/") if part]
+        if not parts:
+            continue
+        target = parts[-1]
+        if len(parts) >= 2 and parts[-2] in {"instances", "disks", "forwardingRules", "addresses"}:
+            target = parts[-1]
+        targets.append(target)
+
+    if not targets:
+        return "Unattached"
+
+    unique_targets = list(dict.fromkeys(targets))
+    return ", ".join(unique_targets[:3])
+
+
+def normalize_resource(resource: dict[str, Any], iam_user: str = "Unknown") -> dict[str, Any]:
     normalized = dict(resource)
     normalized["asset_class"] = _classify_asset_type(str(resource.get("asset_type") or ""))
     normalized["resource_name"] = _friendly_resource_name(str(resource.get("asset_type") or ""))
     normalized["estimated_monthly_cost"] = estimate_monthly_cost(resource)
     normalized["owner_hint"] = extract_owner_hint(resource)
+    normalized["usage_status"] = extract_usage_status(resource)
+    normalized["attachment_target"] = extract_attachment_target(resource)
+    normalized["created_by_iam_user"] = iam_user
     normalized["created_at"] = _format_timestamp(str(resource.get("create_time") or ""))
     normalized["updated_at"] = _format_timestamp(str(resource.get("update_time") or ""))
     normalized["labels"] = _to_dict(resource.get("labels"))
@@ -232,7 +360,10 @@ def normalize_resource(resource: dict[str, Any]) -> dict[str, Any]:
             str(normalized.get("asset_type") or ""),
             str(normalized.get("location") or ""),
             str(normalized.get("owner_hint") or ""),
+            str(normalized.get("usage_status") or ""),
+            str(normalized.get("attachment_target") or ""),
             str(normalized.get("labels") or ""),
+            str(normalized.get("created_by_iam_user") or ""),
         ]
     ).lower()
     return normalized
@@ -277,6 +408,9 @@ def fetch_live_resources(
             "Scope must start with projects/, folders/, or organizations/."
         )
 
+    iam_user_info = get_iam_user_info(credentials)
+    iam_user_email = iam_user_info["email"]
+
     client = asset_v1.AssetServiceClient(credentials=credentials)
     request = asset_v1.SearchAllResourcesRequest(
         scope=scope,
@@ -294,7 +428,8 @@ def fetch_live_resources(
                         item._pb,
                         preserving_proto_field_name=True,
                         use_integers_for_enums=False,
-                    )
+                    ),
+                    iam_user=iam_user_email,
                 )
             )
             if len(resources) >= limit:
