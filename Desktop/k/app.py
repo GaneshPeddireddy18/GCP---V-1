@@ -411,6 +411,29 @@ with st.sidebar:
         ["GCP", "AWS"],
         horizontal=True,
     )
+
+    if "active_cloud_provider" not in st.session_state:
+        st.session_state.active_cloud_provider = cloud_provider
+    if st.session_state.active_cloud_provider != cloud_provider:
+        st.session_state.resources = []
+        st.session_state.raw_resources = []
+        st.session_state.fetch_clicked = False
+        st.session_state.last_refresh_at = None
+        st.session_state.connection_state = "Disconnected"
+        st.session_state.selected_live_resource = None
+        if cloud_provider == "GCP":
+            st.session_state.aws_session = None
+            st.session_state.aws_role_arn = ""
+            st.session_state.aws_profile_name = ""
+            st.session_state.aws_external_id = ""
+            st.session_state.aws_account_id = ""
+            st.session_state.aws_account_alias = ""
+        else:
+            credentials = None
+            default_project_id = None
+            service_account_email = None
+        st.session_state.active_cloud_provider = cloud_provider
+        st.rerun()
     
     st.divider()
     
@@ -700,7 +723,10 @@ resources = filter_resources_by_cloud(st.session_state.raw_resources)
 df = pd.DataFrame(resources) if resources else pd.DataFrame()
 
 if not resources and selected_type != "clockpluse":
-    st.info("Upload a service account JSON and click 'Fetch Live Resources' in the sidebar to begin.")
+    if cloud_provider == "GCP":
+        st.info("Upload a service account JSON and click 'Fetch Live Resources' in the sidebar to begin.")
+    else:
+        st.info("Enter an AWS IAM Role ARN, then click 'Get Data' and 'Fetch Live Resources' to begin.")
 else:
     st.markdown(
         """
@@ -947,8 +973,16 @@ else:
     health_score = dashboard["health_score"]
 
     status_left, status_mid, status_right, status_tail = st.columns([1.15, 1.15, 1.05, 1.05])
+    cloud_status_label = f"Connected to {cloud_provider}" if st.session_state.connection_state == "Connected" else "Waiting for refresh" if st.session_state.connection_state == "Disconnected" else "Refresh error"
+    hero_title = "See your core GCP services at a glance" if cloud_provider == "GCP" else "See your core AWS services at a glance"
+    hero_description = (
+        "This dashboard keeps only the categories you asked for: Compute, Databases, Networking, Storage, Kubernetes, Security, Billing, and IAM."
+        if cloud_provider == "GCP"
+        else "This dashboard keeps the same focused categories while showing only AWS resources for the selected account."
+    )
+    inventory_label = "Cloud Asset Inventory" if cloud_provider == "GCP" else "AWS resource APIs"
     status_left.markdown(
-        f'<div class="feature-card"><strong>Cloud Status</strong><span>{"🟢 Connected to GCP" if st.session_state.connection_state == "Connected" else "🟡 Waiting for refresh" if st.session_state.connection_state == "Disconnected" else "🔴 Refresh error"}</span></div>',
+        f'<div class="feature-card"><strong>Cloud Status</strong><span>{"🟢 " + cloud_status_label if st.session_state.connection_state == "Connected" else "🟡 " + cloud_status_label if st.session_state.connection_state == "Disconnected" else "🔴 " + cloud_status_label}</span></div>',
         unsafe_allow_html=True,
     )
     status_mid.markdown(
@@ -965,18 +999,18 @@ else:
     )
 
     st.markdown(
-        """
+        f"""
         <div class="hero-card">
             <div class="hero-badge">Focused live view</div>
-            <h2>See your core GCP services at a glance</h2>
-            <p style="margin:0;color:#cbd5e1;line-height:1.6;">This dashboard keeps only the categories you asked for: Compute, Databases, Networking, Storage, Kubernetes, Security, Billing, and IAM.</p>
+            <h2>{hero_title}</h2>
+            <p style="margin:0;color:#cbd5e1;line-height:1.6;">{hero_description}</p>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
     hero_a, hero_b, hero_c = st.columns(3)
-    hero_a.markdown('<div class="feature-card"><strong>Live inventory</strong><span>Fetch resources from Cloud Asset Inventory in one click.</span></div>', unsafe_allow_html=True)
+    hero_a.markdown(f'<div class="feature-card"><strong>Live inventory</strong><span>Fetch resources from {inventory_label} in one click.</span></div>', unsafe_allow_html=True)
     hero_b.markdown('<div class="feature-card"><strong>Clean scope</strong><span>Only the services you care about are counted and shown.</span></div>', unsafe_allow_html=True)
     hero_c.markdown('<div class="feature-card"><strong>Faster decisions</strong><span>Use cost, monitoring, and assistant views to act quickly.</span></div>', unsafe_allow_html=True)
 
