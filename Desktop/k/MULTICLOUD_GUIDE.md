@@ -10,7 +10,7 @@ Your dashboard now supports **both GCP and AWS**! Switch between clouds, upload 
 
 ### Cloud Provider Selection
 - **GCP**: Upload service account JSON file
-- **AWS**: Enter AWS Access Key ID and Secret Access Key
+- **AWS**: Enter an IAM role ARN
 
 ### Supported Resources
 
@@ -45,8 +45,8 @@ Your dashboard now supports **both GCP and AWS**! Switch between clouds, upload 
 ### AWS Setup
 1. Open the dashboard at `http://localhost:8501`
 2. In the sidebar, select **AWS** from "Select Cloud Provider"
-3. Enter your **AWS Access Key ID**
-4. Enter your **AWS Secret Access Key**
+3. Enter your **AWS IAM Role ARN**
+4. Make sure the machine running the dashboard already has AWS credentials available to assume that role
 5. Click "Fetch Live Resources"
 
 ---
@@ -60,12 +60,10 @@ Your dashboard now supports **both GCP and AWS**! Switch between clouds, upload 
 - Use `roles/cloudasset.viewer` role for read-only access
 
 ### AWS
-- Access keys are NOT stored or logged
+- No access keys are entered in the dashboard UI
 - Credentials stay in memory only during the session
-- Recommended: Create an IAM user with **read-only policies**
-  - `ReadOnlyAccess` policy includes:
-    - `ec2:Describe*`, `rds:Describe*`, `s3:Get*`, `s3:List*`, `lambda:List*`
-  - Or create a custom policy with specific permissions
+- Recommended: run the dashboard on EC2 with an instance profile or other base AWS identity
+- That base identity must allow `sts:AssumeRole` on the role ARN you enter
 
 ### Recommended AWS Policy (Custom - Most Secure)
 ```json
@@ -175,7 +173,8 @@ Both clouds show:
 - **"Permission denied"** → Ensure service account has `roles/cloudasset.viewer`
 
 ### AWS Issues
-- **"Invalid credentials"** → Verify Access Key ID and Secret Access Key
+- **"No base AWS credentials found"** → Run the dashboard on EC2 with an instance profile or configure AWS CLI credentials locally
+- **"Failed to assume role"** → Verify the role ARN and trust policy allow the dashboard identity to assume it
 - **"AccessDenied"** → Ensure IAM user has read-only policies
 - **"No resources found"** → Might mean genuinely no resources in your account
 - **"Region not available"** → Some regions may be restricted; check AWS account settings

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from datetime import datetime, timezone
 from typing import Any
 
@@ -16,39 +15,49 @@ class AWSServiceError(Exception):
     pass
 
 
-def load_credentials_from_dict(creds_dict: dict[str, str]) -> tuple[Any, str]:
+def assume_role_session(role_arn: str, external_id: str | None = None, session_name: str = "cloud-dashboard-session") -> tuple[Any, str]:
+    """Assume an IAM role using the default AWS credential chain.
+
+    The dashboard does not require access keys in the UI. It relies on the
+    environment where it runs for base AWS credentials, then assumes the role
+    ARN supplied by the user.
     """
-    Load AWS credentials from dictionary.
-    
-    Args:
-        creds_dict: Dict with 'access_key_id' and 'secret_access_key'
-    
-    Returns:
-        Tuple of (session, account_id)
-    """
+    role_arn = role_arn.strip()
+    if not role_arn:
+        raise AWSServiceError("Enter an IAM role ARN.")
+
     try:
-        access_key = creds_dict.get("access_key_id", "").strip()
-        secret_key = creds_dict.get("secret_access_key", "").strip()
+        base_session = boto3.Session()
+        sts_client = base_session.client("sts", region_name="us-east-1")
 
-        if not access_key or not secret_key:
-            raise AWSServiceError("Missing access_key_id or secret_access_key.")
+        assume_kwargs: dict[str, str] = {
+            "RoleArn": role_arn,
+            "RoleSessionName": session_name,
+        }
+        if external_id and external_id.strip():
+            assume_kwargs["ExternalId"] = external_id.strip()
 
-        session = boto3.Session(
-            aws_access_key_id=access_key,
-            aws_secret_access_key=secret_key,
+        response = sts_client.assume_role(**assume_kwargs)
+        credentials = response["Credentials"]
+
+        assumed_session = boto3.Session(
+            aws_access_key_id=credentials["AccessKeyId"],
+            aws_secret_access_key=credentials["SecretAccessKey"],
+            aws_session_token=credentials["SessionToken"],
         )
 
-        # Verify credentials and get account ID
-        sts_client = session.client("sts", region_name="us-east-1")
-        account_id = sts_client.get_caller_identity()["Account"]
+        identity = assumed_session.client("sts", region_name="us-east-1").get_caller_identity()
+        account_id = identity.get("Account", "Unknown")
 
-        return session, account_id
-    except (KeyError, ValueError) as e:
-        raise AWSServiceError(f"Invalid credentials format: {str(e)}")
-    except NoCredentialsError:
-        raise AWSServiceError("AWS credentials not found or invalid.")
-    except ClientError as e:
-        raise AWSServiceError(f"Failed to verify credentials: {str(e)}")
+        return assumed_session, account_id
+    except NoCredentialsError as exc:
+        raise AWSServiceError(
+            "No base AWS credentials found. Run the dashboard on EC2 with an instance profile, or configure AWS CLI credentials locally so it can assume the role ARN."
+        ) from exc
+    except ClientError as exc:
+        raise AWSServiceError(f"Failed to assume role: {exc.response.get('Error', {}).get('Message', str(exc))}") from exc
+    except Exception as exc:
+        raise AWSServiceError(f"Failed to initialize AWS session: {str(exc)}") from exc
 
 
 def fetch_ec2_instances(session: boto3.Session, regions: list[str] | None = None) -> list[dict[str, object]]:
@@ -286,10 +295,12 @@ def get_aws_account_info(session: boto3.Session) -> dict[str, str]:
         identity = sts_client.get_caller_identity()
         account_id = identity.get("Account", "Unknown")
 
-        iam_client = session.client("iam", region_name="us-east-1")
+        alias = account_id
         try:
+            iam_client = session.client("iam", region_name="us-east-1")
             aliases = iam_client.list_account_aliases()
-            alias = aliases["AccountAliases"][0] if aliases["AccountAliases"] else account_id
+            if aliases.get("AccountAliases"):
+                alias = aliases["AccountAliases"][0]
         except ClientError:
             alias = account_id
 

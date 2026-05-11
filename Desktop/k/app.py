@@ -22,7 +22,7 @@ from gcp_asset_service import (
 )
 from aws_service import (
     AWSServiceError,
-    load_credentials_from_dict as load_aws_credentials,
+    assume_role_session,
     fetch_all_resources,
     get_aws_account_info,
 )
@@ -461,47 +461,36 @@ Upload a service account JSON and fetch your live GCP inventory.
     else:  # AWS
         st.markdown(
             """
-Provide AWS credentials to fetch your live AWS inventory.
+Provide an IAM role ARN to fetch your live AWS inventory.
             """
         )
-        st.info("Secure session: credentials stay in memory only during session.")
-        
-        # AWS credential input method selection
-        aws_cred_method = st.radio(
-            "AWS Credential Method",
-            ["Access Keys"],
-            horizontal=True,
+        st.info("No access keys in the dashboard. It uses the AWS credentials available on the machine to assume the role ARN you provide.")
+
+        aws_role_arn = st.text_input(
+            "AWS IAM Role ARN",
+            placeholder="arn:aws:iam::123456789012:role/ReadOnlyDashboardRole",
+            help="This role must trust the AWS identity running the dashboard and allow sts:AssumeRole.",
         )
-        
-        if aws_cred_method == "Access Keys":
-            aws_access_key = st.text_input(
-                "AWS Access Key ID",
-                type="password",
-                help="Leave empty if using AWS CLI credentials",
-            )
-            aws_secret_key = st.text_input(
-                "AWS Secret Access Key",
-                type="password",
-                help="Leave empty if using AWS CLI credentials",
-            )
-            
-            if aws_access_key and aws_secret_key:
-                try:
-                    aws_session, account_id = load_aws_credentials({
-                        "access_key_id": aws_access_key,
-                        "secret_access_key": aws_secret_key,
-                    })
-                    account_info = get_aws_account_info(aws_session)
-                    account_alias = account_info.get("account_alias", account_id)
-                    
-                    st.success("AWS credentials loaded successfully.")
-                    st.metric("Account ID", account_id)
-                    st.metric("Account Alias", account_alias)
-                except AWSServiceError as exc:
-                    st.error(str(exc))
-                    aws_session = None
-            else:
-                st.warning("Enter AWS Access Key ID and Secret Access Key to proceed.")
+        aws_external_id = st.text_input(
+            "External ID (optional)",
+            placeholder="Only if your role trust policy requires it",
+            help="Leave blank unless your role requires an ExternalId.",
+        )
+
+        if aws_role_arn.strip():
+            try:
+                aws_session, account_id = assume_role_session(aws_role_arn, external_id=aws_external_id)
+                account_info = get_aws_account_info(aws_session)
+                account_alias = account_info.get("account_alias", account_id)
+
+                st.success("AWS role assumed successfully.")
+                st.metric("Account ID", account_id)
+                st.metric("Account Alias", account_alias)
+            except AWSServiceError as exc:
+                st.error(str(exc))
+                aws_session = None
+        else:
+            st.warning("Enter an AWS IAM Role ARN to proceed.")
         
         query = st.text_input(
             "Optional resource name filter",
@@ -509,7 +498,7 @@ Provide AWS credentials to fetch your live AWS inventory.
             help="Filter resources by name (case-insensitive)",
         )
         only_running = True
-        st.caption("RUNNING-only mode: Filters for running/active resources only.")
+        st.caption("RUNNING-only mode: Filters for running/active resources only. Role ARN is used with the machine's AWS identity, not dashboard secrets.")
 
     st.markdown("### 🚀 Navigation")
     page_key = st.radio(
@@ -556,7 +545,7 @@ Provide AWS credentials to fetch your live AWS inventory.
         if cloud_provider == "GCP":
             st.warning("Upload a service account JSON to unlock live resource fetching and monitoring.")
         else:
-            st.warning("Enter AWS credentials to unlock live resource fetching and monitoring.")
+            st.warning("Enter an AWS IAM Role ARN to unlock live resource fetching and monitoring.")
 
 if "resources" not in st.session_state:
     st.session_state.resources = []
