@@ -21,6 +21,7 @@ ENV PATH="/opt/venv/bin:$PATH"
 # Copy application code
 COPY app.py .
 COPY gcp_asset_service.py .
+COPY aws_service.py .
 COPY cache_manager.py .
 
 # Create .streamlit directory for config

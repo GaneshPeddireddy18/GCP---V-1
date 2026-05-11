@@ -20,14 +20,20 @@ from gcp_asset_service import (
     parse_compute_instance_resource,
     summarize_costs,
 )
+from aws_service import (
+    AWSServiceError,
+    load_credentials_from_dict as load_aws_credentials,
+    fetch_all_resources,
+    get_aws_account_info,
+)
 from cache_manager import CacheManager, MetadataCache
 
 
 CATEGORY_MAP: dict[str, list[str]] = {
-    "Compute": ["compute.googleapis.com/Instance", "compute.googleapis.com/Disk", "compute.googleapis.com/ForwardingRule"],
-    "Databases": ["sqladmin.googleapis.com/Instance", "spanner.googleapis.com/Instance"],
+    "Compute": ["compute.googleapis.com/Instance", "compute.googleapis.com/Disk", "compute.googleapis.com/ForwardingRule", "aws.ec2.Instance", "aws.lambda.Function"],
+    "Databases": ["sqladmin.googleapis.com/Instance", "spanner.googleapis.com/Instance", "aws.rds.Database"],
     "Networking": ["compute.googleapis.com/Network", "compute.googleapis.com/Firewall", "compute.googleapis.com/ForwardingRule"],
-    "Storage": ["storage.googleapis.com/Bucket"],
+    "Storage": ["storage.googleapis.com/Bucket", "aws.s3.Bucket"],
     "Kubernetes": ["container.googleapis.com/Cluster"],
     "Security": ["cloudkms.googleapis.com/KeyRing", "cloudkms.googleapis.com/CryptoKey"],
     "Billing": ["billingbudgets.googleapis.com/Budget"],
@@ -377,14 +383,16 @@ def build_performance_guidance(df: pd.DataFrame) -> list[str]:
     return guidance[:3]
 
 
-st.set_page_config(page_title="GCP Live Resource Dashboard", page_icon="☁", layout="wide")
+st.set_page_config(page_title="Multi-Cloud Dashboard", page_icon="☁", layout="wide")
 
-st.title("AI-Powered Cloud Infrastructure Intelligence Platform")
-st.caption("Fast live GCP inventory, cost signals, and action views in one place.")
+st.title("AI-Powered Multi-Cloud Infrastructure Intelligence Platform")
+st.caption("Fast live inventory from GCP & AWS, cost signals, and action views in one place.")
 
 credentials = None
+aws_session = None
 default_project_id = None
 service_account_email = None
+account_alias = None
 uploaded_file = None
 file_text = None
 scope = "projects/YOUR_PROJECT_ID"
@@ -396,13 +404,113 @@ refresh_seconds = 10
 page_selected = "overview"
 
 with st.sidebar:
-    st.header("Configuration")
-    st.markdown(
-        """
-Upload a service account JSON and fetch your live GCP inventory.
-        """
+    st.header("Cloud Configuration")
+    
+    # Cloud Provider Selection
+    cloud_provider = st.radio(
+        "Select Cloud Provider",
+        ["GCP", "AWS"],
+        horizontal=True,
     )
-    st.info("Secure session: key stays in memory only.")
+    
+    st.divider()
+    
+    if cloud_provider == "GCP":
+        st.markdown(
+            """
+Upload a service account JSON and fetch your live GCP inventory.
+            """
+        )
+        st.info("Secure session: key stays in memory only.")
+        
+        uploaded_file = st.file_uploader("Upload service account JSON", type=["json"], key="gcp_uploader")
+
+        if uploaded_file:
+            try:
+                file_text = uploaded_file.getvalue().decode("utf-8")
+                credentials, default_project_id, service_account_email = load_credentials_from_json(file_text)
+            except UnicodeDecodeError:
+                st.error("File is not valid UTF-8 JSON.")
+            except GCPDashboardError as exc:
+                st.error(str(exc))
+            else:
+                st.success("Service account key loaded successfully.")
+
+                # Display IAM user information
+                iam_user_info = get_iam_user_info(credentials)
+                st.info(f"🔐 **IAM User:** {iam_user_info['email']}\n\n**Type:** {iam_user_info['user_type']}")
+
+                st.metric("Service Account", service_account_email or "Unknown")
+                st.metric("Default Project", default_project_id or "Unknown")
+
+                default_scope = f"projects/{default_project_id}" if default_project_id else "projects/YOUR_PROJECT_ID"
+                scope = st.text_input(
+                    "Scope",
+                    value=default_scope,
+                    help="Use projects/<id>, folders/<id>, or organizations/<id>",
+                )
+
+                query = st.text_input(
+                    "Optional query filter",
+                    value="",
+                    help="Example: state:RUNNING OR location:us-central1",
+                )
+                only_running = True
+                st.caption("RUNNING-only mode: READY, STOPPED, and TERMINATED resources are hidden.")
+    
+    else:  # AWS
+        st.markdown(
+            """
+Provide AWS credentials to fetch your live AWS inventory.
+            """
+        )
+        st.info("Secure session: credentials stay in memory only during session.")
+        
+        # AWS credential input method selection
+        aws_cred_method = st.radio(
+            "AWS Credential Method",
+            ["Access Keys"],
+            horizontal=True,
+        )
+        
+        if aws_cred_method == "Access Keys":
+            aws_access_key = st.text_input(
+                "AWS Access Key ID",
+                type="password",
+                help="Leave empty if using AWS CLI credentials",
+            )
+            aws_secret_key = st.text_input(
+                "AWS Secret Access Key",
+                type="password",
+                help="Leave empty if using AWS CLI credentials",
+            )
+            
+            if aws_access_key and aws_secret_key:
+                try:
+                    aws_session, account_id = load_aws_credentials({
+                        "access_key_id": aws_access_key,
+                        "secret_access_key": aws_secret_key,
+                    })
+                    account_info = get_aws_account_info(aws_session)
+                    account_alias = account_info.get("account_alias", account_id)
+                    
+                    st.success("AWS credentials loaded successfully.")
+                    st.metric("Account ID", account_id)
+                    st.metric("Account Alias", account_alias)
+                except AWSServiceError as exc:
+                    st.error(str(exc))
+                    aws_session = None
+            else:
+                st.warning("Enter AWS Access Key ID and Secret Access Key to proceed.")
+        
+        query = st.text_input(
+            "Optional resource name filter",
+            value="",
+            help="Filter resources by name (case-insensitive)",
+        )
+        only_running = True
+        st.caption("RUNNING-only mode: Filters for running/active resources only.")
+
     st.markdown("### 🚀 Navigation")
     page_key = st.radio(
         "Select Page",
@@ -413,70 +521,42 @@ Upload a service account JSON and fetch your live GCP inventory.
         label_visibility="collapsed",
     )
     page_selected = page_key
+    
+    st.divider()
+    
+    if (cloud_provider == "GCP" and credentials) or (cloud_provider == "AWS" and aws_session):
+        max_rows = st.slider("Maximum rows", min_value=100, max_value=10000, value=2000, step=100)
 
-    uploaded_file = st.file_uploader("Upload service account JSON", type=["json"])
+        st.divider()
 
-    if uploaded_file:
-        try:
-            file_text = uploaded_file.getvalue().decode("utf-8")
-            credentials, default_project_id, service_account_email = load_credentials_from_json(file_text)
-        except UnicodeDecodeError:
-            st.error("File is not valid UTF-8 JSON.")
-        except GCPDashboardError as exc:
-            st.error(str(exc))
-        else:
-            st.success("Service account key loaded successfully.")
+        auto_refresh_enabled = st.checkbox("Auto refresh live data", value=False)
+        refresh_seconds = st.selectbox("Refresh interval (lower = more network usage)", [30, 60, 120, 300], index=1)
 
-            # Display IAM user information
-            iam_user_info = get_iam_user_info(credentials)
-            st.info(f"🔐 **IAM User:** {iam_user_info['email']}\n\n**Type:** {iam_user_info['user_type']}")
+        st.divider()
 
-            st.metric("Service Account", service_account_email or "Unknown")
-            st.metric("Default Project", default_project_id or "Unknown")
+        if st.button("Fetch Live Resources", type="primary"):
+            st.session_state.fetch_clicked = True
 
-            default_scope = f"projects/{default_project_id}" if default_project_id else "projects/YOUR_PROJECT_ID"
-            scope = st.text_input(
-                "Scope",
-                value=default_scope,
-                help="Use projects/<id>, folders/<id>, or organizations/<id>",
-            )
-
-            query = st.text_input(
-                "Optional query filter",
-                value="",
-                help="Example: state:RUNNING OR location:us-central1",
-            )
-            only_running = True
-            st.caption("RUNNING-only mode: READY, STOPPED, and TERMINATED resources are hidden.")
-            max_rows = st.slider("Maximum rows", min_value=100, max_value=10000, value=2000, step=100)
-
-            st.divider()
-
-            auto_refresh_enabled = st.checkbox("Auto refresh live data", value=False)
-            refresh_seconds = st.selectbox("Refresh interval (lower = more network usage)", [30, 60, 120, 300], index=1)
-
-            st.divider()
-
-            if st.button("Fetch Live Resources", type="primary"):
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("🔄 Refresh Data", help="Re-fetch all resource metadata to see updated timestamps"):
+                st.session_state.resources = []
+                st.session_state.last_refresh_at = None
                 st.session_state.fetch_clicked = True
+                st.rerun()
+        with col2:
+            if st.button("⚡ Quick Refresh", help="Instantly refresh timestamps for object changes"):
+                st.session_state.fetch_clicked = True
+                st.rerun()
 
-            col1, col2 = st.columns(2)
-            with col1:
-                if st.button("🔄 Refresh Data", help="Re-fetch all resource metadata to see updated timestamps"):
-                    st.session_state.resources = []
-                    st.session_state.last_refresh_at = None
-                    st.session_state.fetch_clicked = True
-                    st.rerun()
-            with col2:
-                if st.button("⚡ Quick Refresh", help="Instantly refresh timestamps for object changes"):
-                    st.session_state.fetch_clicked = True
-                    st.rerun()
+        st.divider()
 
-            st.divider()
-
-            st.caption("💡 Live updates: Auto-refresh interval can be adjusted. Smart caching reduces network usage. Click Quick Refresh for instant updates after object changes.")
+        st.caption("💡 Live updates: Auto-refresh interval can be adjusted. Smart caching reduces network usage. Click Quick Refresh for instant updates after object changes.")
     else:
-        st.warning("Upload a service account JSON to unlock live resource fetching and monitoring.")
+        if cloud_provider == "GCP":
+            st.warning("Upload a service account JSON to unlock live resource fetching and monitoring.")
+        else:
+            st.warning("Enter AWS credentials to unlock live resource fetching and monitoring.")
 
 if "resources" not in st.session_state:
     st.session_state.resources = []
@@ -505,23 +585,51 @@ if "metadata_cache" not in st.session_state:
     st.session_state.metadata_cache = MetadataCache()
 
 def load_resources() -> list[dict[str, object]]:
-    if credentials is None:
-        raise GCPDashboardError("Upload a service account JSON before fetching live resources.")
-    with st.spinner("Fetching live resources from GCP..."):
-        resources = fetch_live_resources(
-            credentials=credentials,
-            scope=scope.strip(),
-            query=query,
-            limit=max_rows,
-        )
+    if cloud_provider == "GCP":
+        if credentials is None:
+            raise GCPDashboardError("Upload a service account JSON before fetching live resources.")
+        with st.spinner("Fetching live resources from GCP..."):
+            resources = fetch_live_resources(
+                credentials=credentials,
+                scope=scope.strip(),
+                query=query,
+                limit=max_rows,
+            )
+    else:  # AWS
+        if aws_session is None:
+            raise AWSServiceError("Enter AWS credentials before fetching live resources.")
+        with st.spinner("Fetching live resources from AWS..."):
+            resources = fetch_all_resources(aws_session)
+            
+            # Apply query filter if provided (filter by name)
+            if query.strip():
+                query_lower = query.strip().lower()
+                resources = [r for r in resources if query_lower in str(r.get("name", "")).lower()]
+            
+            # Limit results
+            if len(resources) > max_rows:
+                resources = resources[:max_rows]
 
     return resources
+
+def filter_resources_by_cloud(resources: list[dict[str, object]]) -> list[dict[str, object]]:
+    """Filter resources based on cloud provider - show running resources only."""
+    if cloud_provider == "GCP":
+        return filter_likely_running(resources)
+    else:  # AWS
+        # Filter AWS resources for running/active states
+        running_states = {"running", "available", "active"}
+        return [
+            r for r in resources
+            if str(r.get("state", "")).lower() in running_states
+        ]
+
 
 # Handle Fetch Live Resources button from sidebar
 if st.session_state.get("fetch_clicked"):
     try:
         resources = load_resources()
-    except GCPDashboardError as exc:
+    except (GCPDashboardError, AWSServiceError) as exc:
         st.session_state.connection_state = "Error"
         st.error(str(exc))
         st.stop()
@@ -534,25 +642,25 @@ if st.session_state.get("fetch_clicked"):
         st.stop()
 
     st.session_state.raw_resources = resources
-    st.session_state.resources = filter_likely_running(resources)
+    st.session_state.resources = filter_resources_by_cloud(resources)
     st.session_state.fetch_clicked = False
     st.session_state.connection_state = "Connected"
     st.session_state.last_refresh_at = datetime.now(timezone.utc)
 
 if auto_refresh_enabled and st.session_state.raw_resources:
-    st_autorefresh(interval=refresh_seconds * 1000, key="gcp_live_refresh")
+    st_autorefresh(interval=refresh_seconds * 1000, key="cloud_live_refresh")
     try:
         st.session_state.raw_resources = load_resources()
-        st.session_state.resources = filter_likely_running(st.session_state.raw_resources)
+        st.session_state.resources = filter_resources_by_cloud(st.session_state.raw_resources)
         st.session_state.connection_state = "Connected"
         st.session_state.last_refresh_at = datetime.now(timezone.utc)
-    except GCPDashboardError as exc:
+    except (GCPDashboardError, AWSServiceError) as exc:
         st.session_state.connection_state = "Error"
         st.warning(str(exc))
 
 selected_type = page_selected
 
-resources = filter_likely_running(st.session_state.raw_resources)
+resources = filter_resources_by_cloud(st.session_state.raw_resources)
 
 df = pd.DataFrame(resources) if resources else pd.DataFrame()
 
